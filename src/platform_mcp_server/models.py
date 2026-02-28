@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import re
+
 # Note 6: `Literal` is used to define a closed set of allowed string values directly in
 # Note 7: the type system. The type checker (and Pydantic) will reject any value not
 # Note 8: listed, giving you enumeration behaviour without the overhead of a full Enum.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+
 # Note 1: `Literal` from typing lets you declare a type as exactly one of a fixed set of string
 # Note 2: values. This acts like a closed enum without needing a full Enum class -- the type
 # Note 3: checker will reject any string that is not listed, giving you compile-time safety.

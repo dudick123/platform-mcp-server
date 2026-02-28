@@ -28,6 +28,9 @@ _NODE_POOL_RE = re.compile(r"^[a-z][a-z0-9]{0,11}$")
 # time regardless of how many valid modes are defined.
 _VALID_MODES = {"preflight", "live"}
 
+# Valid values for the status_filter parameter used by get_pod_health.
+_VALID_STATUS_FILTERS = {"all", "pending", "failed"}
+
 
 # Note 6: This is the "guard clause" (or "early return") pattern. By returning
 # immediately when the input is None, the rest of the function stays unindented
@@ -63,4 +66,12 @@ def validate_mode(mode: str) -> None:
         # tests brittle and user-facing output confusing.
         valid = ", ".join(sorted(_VALID_MODES))
         msg = f"Invalid mode: {mode!r}. Must be one of: {valid}"
+        raise ValueError(msg)
+
+
+def validate_status_filter(status_filter: str) -> None:
+    """Validate the status_filter parameter for get_pod_health."""
+    if status_filter not in _VALID_STATUS_FILTERS:
+        valid = ", ".join(sorted(_VALID_STATUS_FILTERS))
+        msg = f"Invalid status_filter: {status_filter!r}. Must be one of: {valid}"
         raise ValueError(msg)

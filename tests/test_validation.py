@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from platform_mcp_server.validation import validate_mode, validate_namespace, validate_node_pool
+from platform_mcp_server.validation import validate_mode, validate_namespace, validate_node_pool, validate_status_filter
 
 
 # Note 3: Grouping tests into classes is a pytest best practice for related test
@@ -179,3 +179,26 @@ class TestValidateMode:
         # case-sensitive, preventing that category of silent behaviour change.
         with pytest.raises(ValueError, match="Invalid mode"):
             validate_mode("LIVE")
+
+
+class TestValidateStatusFilter:
+    def test_all_valid(self) -> None:
+        validate_status_filter("all")
+
+    def test_pending_valid(self) -> None:
+        validate_status_filter("pending")
+
+    def test_failed_valid(self) -> None:
+        validate_status_filter("failed")
+
+    def test_invalid_filter(self) -> None:
+        with pytest.raises(ValueError, match="Invalid status_filter"):
+            validate_status_filter("running")
+
+    def test_case_sensitive(self) -> None:
+        with pytest.raises(ValueError, match="Invalid status_filter"):
+            validate_status_filter("All")
+
+    def test_empty_string(self) -> None:
+        with pytest.raises(ValueError, match="Invalid status_filter"):
+            validate_status_filter("")
