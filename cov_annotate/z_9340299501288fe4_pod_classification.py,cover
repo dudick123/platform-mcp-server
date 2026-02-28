@@ -1,0 +1,58 @@
+> """Shared pod failure classification logic used by pod_health and upgrade_progress."""
+  
+> from __future__ import annotations
+  
+> from typing import Any
+  
+  # Failure category mapping
+> SCHEDULING_REASONS = {"Unschedulable", "FailedScheduling", "InsufficientCPU", "InsufficientMemory"}
+> RUNTIME_REASONS = {"CrashLoopBackOff", "OOMKilled", "Error", "ContainerStatusUnknown"}
+> REGISTRY_REASONS = {"ImagePullBackOff", "ErrImagePull", "ErrImageNeverPull"}
+> CONFIG_REASONS = {"CreateContainerConfigError", "InvalidImageName", "RunContainerError"}
+  
+  
+> def categorize_failure(reason: str | None, container_statuses: list[dict[str, Any]]) -> str:
+>     """Determine failure category from reason and container state."""
+>     if reason and reason in SCHEDULING_REASONS:
+>         return "scheduling"
+  
+>     for cs in container_statuses:
+>         waiting = cs.get("state", {}).get("waiting", {})
+>         waiting_reason = waiting.get("reason", "")
+>         if waiting_reason in SCHEDULING_REASONS:
+>             return "scheduling"
+>         if waiting_reason in RUNTIME_REASONS:
+>             return "runtime"
+>         if waiting_reason in REGISTRY_REASONS:
+>             return "registry"
+>         if waiting_reason in CONFIG_REASONS:
+>             return "config"
+  
+>         last_term = cs.get("last_terminated", {})
+>         if last_term.get("reason") == "OOMKilled":
+>             return "runtime"
+  
+>     if reason and reason in RUNTIME_REASONS:
+>         return "runtime"
+>     if reason and reason in REGISTRY_REASONS:
+>         return "registry"
+>     if reason and reason in CONFIG_REASONS:
+>         return "config"
+  
+>     return "unknown"
+  
+  
+> def is_unhealthy(pod: dict[str, Any]) -> bool:
+>     """Check if a pod is currently in an unhealthy state."""
+>     phase = pod.get("phase", "")
+>     if phase in ("Pending", "Failed", "Unknown"):
+>         return True
+  
+>     for cs in pod.get("container_statuses", []):
+>         waiting = cs.get("state", {}).get("waiting", {})
+>         if waiting.get("reason") in RUNTIME_REASONS | REGISTRY_REASONS | CONFIG_REASONS:
+>             return True
+>         if cs.get("last_terminated", {}).get("reason") == "OOMKilled":
+>             return True
+  
+>     return False

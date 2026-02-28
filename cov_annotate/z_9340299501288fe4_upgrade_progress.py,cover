@@ -1,0 +1,305 @@
+> """get_upgrade_progress — per-node upgrade state during in-flight upgrades."""
+  
+> from __future__ import annotations
+  
+> import asyncio
+> from datetime import UTC, datetime
+> from typing import Any, Literal
+  
+> import structlog
+  
+> from platform_mcp_server.clients.azure_aks import AzureAksClient
+> from platform_mcp_server.clients.k8s_core import K8sCoreClient
+> from platform_mcp_server.clients.k8s_events import K8sEventsClient
+> from platform_mcp_server.clients.k8s_policy import K8sPolicyClient
+> from platform_mcp_server.config import ALL_CLUSTER_IDS, get_thresholds, resolve_cluster
+> from platform_mcp_server.models import (
+>     AffectedPod,
+>     NodeUpgradeState,
+>     PodTransitionSummary,
+>     ToolError,
+>     UpgradeProgressOutput,
+> )
+> from platform_mcp_server.tools.pod_classification import categorize_failure, is_unhealthy
+> from platform_mcp_server.validation import validate_node_pool
+  
+> log = structlog.get_logger()
+  
+> _POD_TRANSITION_CAP = 20
+> _ACTIVE_UPGRADE_STATES = {"cordoned", "upgrading", "pdb_blocked", "stalled"}
+  
+  
+> def _parse_event_timestamp(ts_str: str | None) -> datetime | None:
+>     """Parse an ISO timestamp string to a datetime."""
+>     if not ts_str:
+>         return None
+>     try:
+>         return datetime.fromisoformat(ts_str)
+>     except (ValueError, TypeError):  # fmt: skip
+>         return None
+  
+  
+> def _classify_node_state(
+>     node: dict[str, Any],
+>     target_version: str,
+>     node_events: dict[str, list[dict[str, Any]]],
+>     pdb_blockers: set[str],
+>     upgrade_start: datetime | None,
+>     thresholds_minutes: int,
+> ) -> Literal["upgraded", "upgrading", "cordoned", "pdb_blocked", "pending", "stalled"]:
+>     """Classify a node into one of the six upgrade states."""
+>     name = node["name"]
+>     version = node.get("version", "").lstrip("v")
+>     unschedulable = node.get("unschedulable", False)
+  
+>     events = node_events.get(name, [])
+>     has_upgrade_event = any(e["reason"] == "NodeUpgrade" for e in events)
+>     has_ready_event = any(e["reason"] == "NodeReady" for e in events)
+  
+      # Upgraded: has NodeReady after NodeUpgrade and version matches target
+>     if has_upgrade_event and has_ready_event and version == target_version:
+>         return "upgraded"
+  
+      # Upgrading: has NodeUpgrade event but not yet NodeReady
+>     if has_upgrade_event and not has_ready_event:
+          # Check if stalled first
+>         if upgrade_start:
+>             elapsed_minutes = (datetime.now(tz=UTC) - upgrade_start).total_seconds() / 60
+>             if elapsed_minutes > thresholds_minutes:
+>                 if pdb_blockers and unschedulable:
+>                     return "pdb_blocked"
+>                 return "stalled"
+          # PDB blocked: actively upgrading, cordoned, and PDB blocking drain
+>         if unschedulable and pdb_blockers:
+>             return "pdb_blocked"
+>         return "upgrading"
+  
+      # Cordoned: unschedulable but no NodeUpgrade event yet
+>     if unschedulable:
+>         return "cordoned"
+  
+      # Pending: old version, not yet cordoned
+>     return "pending"
+  
+  
+> async def _collect_pod_transitions(
+>     core_client: K8sCoreClient,
+>     node_states: list[NodeUpgradeState],
+>     errors: list[ToolError],
+>     cluster_id: str,
+> ) -> PodTransitionSummary:
+>     """Collect pod transitions on nodes actively involved in the upgrade."""
+      # Identify nodes in active upgrade states
+>     active_node_names = {n.name for n in node_states if n.state in _ACTIVE_UPGRADE_STATES}
+  
+>     if not active_node_names:
+>         return PodTransitionSummary()
+  
+>     try:
+>         all_pods = await core_client.get_pods()
+>     except Exception:
+>         errors.append(
+>             ToolError(
+>                 error="Failed to retrieve pods for transition summary",
+>                 source="k8s-api",
+>                 cluster=cluster_id,
+>                 partial_data=True,
+>             )
+>         )
+>         return PodTransitionSummary()
+  
+      # Filter to unhealthy pods on active upgrade nodes
+>     affected = [p for p in all_pods if p.get("node_name") in active_node_names and is_unhealthy(p)]
+  
+>     pending_count = sum(1 for p in affected if p.get("phase") == "Pending")
+>     failed_count = sum(1 for p in affected if p.get("phase") in ("Failed", "Unknown"))
+      # Include running pods with bad container states in failed count
+>     other_unhealthy = len(affected) - pending_count - failed_count
+>     failed_count += other_unhealthy
+  
+      # Group by failure category
+>     by_category: dict[str, int] = {}
+>     for pod in affected:
+>         category = categorize_failure(pod.get("reason"), pod.get("container_statuses", []))
+>         by_category[category] = by_category.get(category, 0) + 1
+  
+      # Sort: Failed first, then Pending
+>     phase_order = {"Failed": 0, "Unknown": 1, "Pending": 2}
+>     affected.sort(key=lambda p: phase_order.get(p.get("phase", ""), 3))
+  
+      # Build affected pod list (capped)
+>     affected_pods = [
+>         AffectedPod(
+>             name=p["name"],
+>             namespace=p.get("namespace", "unknown"),
+>             phase=p.get("phase", "Unknown"),
+>             reason=p.get("reason"),
+>             node_name=p.get("node_name"),
+>         )
+>         for p in affected[:_POD_TRANSITION_CAP]
+>     ]
+  
+>     return PodTransitionSummary(
+>         pending_count=pending_count,
+>         failed_count=failed_count,
+>         by_category=by_category,
+>         affected_pods=affected_pods,
+>         total_affected=len(affected),
+>     )
+  
+  
+> async def get_upgrade_progress_handler(
+>     cluster_id: str,
+>     node_pool: str | None = None,
+> ) -> UpgradeProgressOutput:
+>     """Core handler for get_upgrade_progress on a single cluster."""
+>     validate_node_pool(node_pool)
+>     config = resolve_cluster(cluster_id)
+>     aks_client = AzureAksClient(config)
+>     core_client = K8sCoreClient(config)
+>     events_client = K8sEventsClient(config)
+>     policy_client = K8sPolicyClient(config)
+>     thresholds = get_thresholds()
+>     errors: list[ToolError] = []
+  
+>     cluster_info = await aks_client.get_cluster_info()
+  
+      # Check if any pool is upgrading
+>     upgrading_pools = [
+>         p
+>         for p in cluster_info.get("node_pools", [])
+>         if p.get("provisioning_state") == "Upgrading" or p.get("current_version") != p.get("target_version")
+>     ]
+  
+>     if node_pool:
+>         upgrading_pools = [p for p in upgrading_pools if p["name"] == node_pool]
+  
+>     if not upgrading_pools:
+>         return UpgradeProgressOutput(
+>             cluster=cluster_id,
+>             upgrade_in_progress=False,
+>             nodes=[],
+>             summary=f"No upgrade in progress for {cluster_id}",
+>             timestamp=datetime.now(tz=UTC).isoformat(),
+>             errors=errors,
+>         )
+  
+>     target_pool = upgrading_pools[0]
+>     target_version = target_pool.get("target_version", "unknown")
+  
+      # Get nodes and events
+>     nodes = await core_client.get_nodes()
+>     if node_pool:
+>         nodes = [n for n in nodes if n.get("pool") == node_pool]
+  
+>     node_events_list = await events_client.get_node_events(reasons=["NodeUpgrade", "NodeReady", "NodeNotReady"])
+  
+      # Group events by node
+>     node_events: dict[str, list[dict[str, Any]]] = {}
+>     for evt in node_events_list:
+>         node_name = evt.get("node_name", "")
+>         if node_name not in node_events:
+>             node_events[node_name] = []
+>         node_events[node_name].append(evt)
+  
+      # Get PDB blockers
+>     pdbs = await policy_client.get_pdbs()
+>     blocker_list = await policy_client.evaluate_pdb_satisfiability(pdbs)
+>     pdb_blocker_names = {b["name"] for b in blocker_list}
+  
+      # Find upgrade start time from earliest NodeUpgrade event
+>     upgrade_start: datetime | None = None
+>     for events_for_node in node_events.values():
+>         for evt in events_for_node:
+>             if evt["reason"] == "NodeUpgrade":
+>                 ts = _parse_event_timestamp(evt.get("timestamp"))
+>                 if ts and (upgrade_start is None or ts < upgrade_start):
+>                     upgrade_start = ts
+  
+      # Classify each node
+>     node_states: list[NodeUpgradeState] = []
+>     for node in nodes:
+>         state = _classify_node_state(
+>             node, target_version, node_events, pdb_blocker_names, upgrade_start, thresholds.upgrade_anomaly_minutes
+>         )
+  
+>         blocking_pdb = None
+>         blocking_pdb_ns = None
+>         if state == "pdb_blocked" and blocker_list:
+>             blocking_pdb = blocker_list[0]["name"]
+>             blocking_pdb_ns = blocker_list[0].get("namespace")
+  
+>         node_states.append(
+>             NodeUpgradeState(
+>                 name=node["name"],
+>                 state=state,
+>                 version=node.get("version", "unknown"),
+>                 blocking_pdb=blocking_pdb,
+>                 blocking_pdb_namespace=blocking_pdb_ns,
+>             )
+>         )
+  
+      # Compute stats
+>     upgraded_count = sum(1 for n in node_states if n.state == "upgraded")
+>     total_count = len(node_states)
+>     remaining = total_count - upgraded_count
+  
+      # Duration estimation
+>     elapsed_seconds: float | None = None
+>     estimated_remaining: float | None = None
+>     if upgrade_start:
+>         elapsed_seconds = (datetime.now(tz=UTC) - upgrade_start).total_seconds()
+>         if upgraded_count > 0 and remaining > 0:
+>             mean_per_node = elapsed_seconds / upgraded_count
+>             estimated_remaining = mean_per_node * remaining
+  
+      # Anomaly flagging
+>     anomaly_flag: str | None = None
+>     if elapsed_seconds and elapsed_seconds > thresholds.upgrade_anomaly_minutes * 60:
+>         has_pdb_block = any(n.state == "pdb_blocked" for n in node_states)
+>         if has_pdb_block:
+>             anomaly_flag = f"Upgrade duration ({int(elapsed_seconds / 60)}m) exceeds baseline but PDB block detected"
+>         else:
+>             anomaly_flag = (
+>                 f"Upgrade duration ({int(elapsed_seconds / 60)}m) exceeds the "
+>                 f"{thresholds.upgrade_anomaly_minutes}-minute expected baseline"
+>             )
+  
+      # Pod transition summary
+>     pod_transitions = await _collect_pod_transitions(core_client, node_states, errors, cluster_id)
+  
+>     summary = (
+>         f"{cluster_id}: {upgraded_count}/{total_count} nodes upgraded"
+>         f"{', upgrade in progress' if remaining > 0 else ', upgrade complete'}"
+>     )
+  
+>     return UpgradeProgressOutput(
+>         cluster=cluster_id,
+>         upgrade_in_progress=True,
+>         node_pool=target_pool["name"],
+>         target_version=target_version,
+>         nodes=node_states,
+>         nodes_total=total_count,
+>         nodes_upgraded=upgraded_count,
+>         nodes_remaining=remaining,
+>         elapsed_seconds=elapsed_seconds,
+>         estimated_remaining_seconds=estimated_remaining,
+>         anomaly_flag=anomaly_flag,
+>         pod_transitions=pod_transitions,
+>         summary=summary,
+>         timestamp=datetime.now(tz=UTC).isoformat(),
+>         errors=errors,
+>     )
+  
+  
+> async def get_upgrade_progress_all(node_pool: str | None = None) -> list[UpgradeProgressOutput]:
+>     """Fan-out get_upgrade_progress to all clusters concurrently."""
+>     tasks = [get_upgrade_progress_handler(cid, node_pool) for cid in ALL_CLUSTER_IDS]
+>     results = await asyncio.gather(*tasks, return_exceptions=True)
+>     outputs: list[UpgradeProgressOutput] = []
+>     for cid, result in zip(ALL_CLUSTER_IDS, results, strict=True):
+>         if isinstance(result, BaseException):
+>             log.error("fan_out_cluster_failed", tool="get_upgrade_progress", cluster=cid, error=str(result))
+>         else:
+>             outputs.append(result)
+>     return outputs

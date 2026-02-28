@@ -1,0 +1,221 @@
+> """AKS REST API wrapper — cluster versions, upgrade profiles, activity log."""
+  
+> from __future__ import annotations
+  
+> from datetime import UTC, datetime, timedelta
+> from typing import Any
+  
+> import structlog
+> from azure.identity import DefaultAzureCredential
+> from azure.mgmt.containerservice import ContainerServiceClient
+> from azure.mgmt.monitor import MonitorManagementClient
+  
+> from platform_mcp_server.config import ClusterConfig
+  
+> log = structlog.get_logger()
+  
+  
+> class AzureAksClient:
+>     """Wrapper around Azure AKS management APIs."""
+  
+>     def __init__(self, cluster_config: ClusterConfig) -> None:
+>         self._config = cluster_config
+>         self._container_client: ContainerServiceClient | None = None
+>         self._monitor_client: MonitorManagementClient | None = None
+>         self._credential: DefaultAzureCredential | None = None
+  
+>     def _get_credential(self) -> DefaultAzureCredential:
+>         if self._credential is None:
+>             self._credential = DefaultAzureCredential()
+>         return self._credential
+  
+>     def _get_container_client(self) -> ContainerServiceClient:
+>         if self._container_client is None:
+>             self._container_client = ContainerServiceClient(
+>                 credential=self._get_credential(),
+>                 subscription_id=self._config.subscription_id,
+>             )
+>         return self._container_client
+  
+>     def _get_monitor_client(self) -> MonitorManagementClient:
+>         if self._monitor_client is None:
+>             self._monitor_client = MonitorManagementClient(
+>                 credential=self._get_credential(),
+>                 subscription_id=self._config.subscription_id,
+>             )
+>         return self._monitor_client
+  
+>     async def get_cluster_info(self) -> dict[str, Any]:
+>         """Get cluster version and basic info from AKS API.
+  
+>         Returns dict with control_plane_version, provisioning_state, and node_pools.
+>         """
+>         client = self._get_container_client()
+>         try:
+>             cluster = client.managed_clusters.get(
+>                 self._config.resource_group,
+>                 self._config.aks_cluster_name,
+>             )
+>         except Exception:
+>             log.error(
+>                 "failed_to_get_cluster_info",
+>                 cluster=self._config.cluster_id,
+>             )
+>             raise
+  
+>         node_pools = []
+>         for pool in cluster.agent_pool_profiles or []:
+>             node_pools.append(
+>                 {
+>                     "name": pool.name,
+>                     "vm_size": pool.vm_size,
+>                     "count": pool.count,
+>                     "min_count": pool.min_count,
+>                     "max_count": pool.max_count,
+>                     "current_version": pool.current_orchestrator_version or pool.orchestrator_version,
+>                     "target_version": pool.orchestrator_version,
+>                     "provisioning_state": pool.provisioning_state,
+>                     "power_state": pool.power_state.code if pool.power_state else None,
+>                     "os_type": pool.os_type,
+>                     "mode": pool.mode,
+>                 }
+>             )
+  
+>         return {
+>             "control_plane_version": cluster.kubernetes_version,
+>             "provisioning_state": cluster.provisioning_state,
+>             "node_pools": node_pools,
+>             "fqdn": cluster.fqdn,
+>         }
+  
+>     async def get_node_pool_state(self, pool_name: str) -> dict[str, Any]:
+>         """Get the state of a specific node pool.
+  
+>         Args:
+>             pool_name: The name of the node pool.
+  
+>         Returns dict with node pool details including provisioning state.
+>         """
+>         client = self._get_container_client()
+>         try:
+>             pool = client.agent_pools.get(
+>                 self._config.resource_group,
+>                 self._config.aks_cluster_name,
+>                 pool_name,
+>             )
+>         except Exception:
+>             log.error(
+>                 "failed_to_get_node_pool",
+>                 cluster=self._config.cluster_id,
+>                 pool=pool_name,
+>             )
+>             raise
+  
+>         return {
+>             "name": pool.name,
+>             "count": pool.count,
+>             "min_count": pool.min_count,
+>             "max_count": pool.max_count,
+>             "current_version": pool.current_orchestrator_version or pool.orchestrator_version,
+>             "target_version": pool.orchestrator_version,
+>             "provisioning_state": pool.provisioning_state,
+>             "power_state": pool.power_state.code if pool.power_state else None,
+>         }
+  
+>     async def get_upgrade_profile(self) -> dict[str, Any]:
+>         """Get available upgrade versions for the cluster.
+  
+>         Returns dict with control plane and per-pool available upgrades.
+>         """
+>         client = self._get_container_client()
+>         try:
+>             profile = client.managed_clusters.get_upgrade_profile(
+>                 self._config.resource_group,
+>                 self._config.aks_cluster_name,
+>             )
+>         except Exception:
+>             log.error(
+>                 "failed_to_get_upgrade_profile",
+>                 cluster=self._config.cluster_id,
+>             )
+>             raise
+  
+>         control_plane_upgrades = []
+>         if profile.control_plane_profile and profile.control_plane_profile.upgrades:
+>             control_plane_upgrades = [u.kubernetes_version for u in profile.control_plane_profile.upgrades if u]
+  
+>         pool_upgrades: dict[str, list[str]] = {}
+>         for pool_profile in profile.agent_pool_profiles or []:
+>             versions: list[str] = []
+>             if pool_profile.upgrades:
+>                 versions = [str(u.kubernetes_version) for u in pool_profile.upgrades if u]
+>             if pool_profile.name:
+>                 pool_upgrades[str(pool_profile.name)] = versions
+  
+>         return {
+>             "control_plane_version": (
+>                 profile.control_plane_profile.kubernetes_version if profile.control_plane_profile else None
+>             ),
+>             "control_plane_upgrades": control_plane_upgrades,
+>             "pool_upgrades": pool_upgrades,
+>         }
+  
+>     async def get_activity_log_upgrades(
+>         self,
+>         count: int = 5,
+>     ) -> list[dict[str, Any]]:
+>         """Get historical upgrade records from Azure Activity Log.
+  
+>         Queries the last 90 days of activity log for AKS upgrade operations.
+  
+>         Args:
+>             count: Maximum number of historical records to return.
+  
+>         Returns a list of upgrade records with date, duration, and version info.
+>         """
+>         count = min(count, 50)
+>         client = self._get_monitor_client()
+>         resource_id = (
+>             f"/subscriptions/{self._config.subscription_id}"
+>             f"/resourceGroups/{self._config.resource_group}"
+>             f"/providers/Microsoft.ContainerService"
+>             f"/managedClusters/{self._config.aks_cluster_name}"
+>         )
+>         now = datetime.now(tz=UTC)
+>         ninety_days_ago = now - timedelta(days=90)
+>         filter_str = (
+>             f"eventTimestamp ge '{ninety_days_ago.isoformat()}' "
+>             f"and eventTimestamp le '{now.isoformat()}' "
+>             f"and resourceUri eq '{resource_id}' "
+>             f"and operationName.value eq 'Microsoft.ContainerService/managedClusters/write'"
+>         )
+  
+>         try:
+>             logs = client.activity_logs.list(filter=filter_str)
+>         except Exception:
+>             log.error(
+>                 "failed_to_get_activity_log",
+>                 cluster=self._config.cluster_id,
+>             )
+>             raise
+  
+>         records: list[dict[str, Any]] = []
+>         for entry in logs:
+>             if len(records) >= count:
+>                 break
+>             if entry.status and entry.status.value == "Succeeded":
+>                 duration_seconds = None
+>                 if entry.event_timestamp and entry.submission_timestamp:
+>                     delta = entry.event_timestamp - entry.submission_timestamp
+>                     duration_seconds = delta.total_seconds()
+  
+>                 records.append(
+>                     {
+>                         "date": entry.event_timestamp.isoformat() if entry.event_timestamp else None,
+>                         "operation": entry.operation_name.value if entry.operation_name else None,
+>                         "status": entry.status.value,
+>                         "duration_seconds": duration_seconds,
+>                         "description": entry.description,
+>                     }
+>                 )
+>         return records
