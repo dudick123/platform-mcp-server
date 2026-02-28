@@ -1,0 +1,166 @@
+"""check_node_pool_pressure — CPU/memory request ratios and pressure levels per node pool."""
+
+from __future__ import annotations
+
+import asyncio
+from collections import defaultdict
+from datetime import UTC, datetime
+from typing import Any, Literal
+
+import structlog
+
+from platform_mcp_server.clients.k8s_core import K8sCoreClient
+from platform_mcp_server.clients.k8s_metrics import K8sMetricsClient
+from platform_mcp_server.config import ALL_CLUSTER_IDS, ThresholdConfig, get_thresholds, resolve_cluster
+from platform_mcp_server.models import NodePoolPressureOutput, NodePoolResult, ToolError
+
+log = structlog.get_logger()
+
+
+def _parse_cpu_millicores(value: str) -> float:
+    """Parse a Kubernetes CPU value to millicores."""
+    if value.endswith("m"):
+        return float(value[:-1])
+    return float(value) * 1000
+
+
+def _parse_memory_bytes(value: str) -> float:
+    """Parse a Kubernetes memory value to bytes."""
+    units = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
+    for suffix, multiplier in units.items():
+        if value.endswith(suffix):
+            return float(value[: -len(suffix)]) * multiplier
+    if value.endswith("k"):
+        return float(value[:-1]) * 1000
+    if value.endswith("M"):
+        return float(value[:-1]) * 1_000_000
+    if value.endswith("G"):
+        return float(value[:-1]) * 1_000_000_000
+    return float(value)
+
+
+def _classify_pressure(
+    cpu_pct: float | None,
+    mem_pct: float | None,
+    pending_pods: int,
+    thresholds: ThresholdConfig,
+) -> Literal["ok", "warning", "critical"]:
+    """Classify pressure level — highest severity wins."""
+    PressureLevel = Literal["ok", "warning", "critical"]
+    levels: list[PressureLevel] = ["ok"]
+
+    if cpu_pct is not None:
+        if cpu_pct >= thresholds.cpu_critical:
+            levels.append("critical")
+        elif cpu_pct >= thresholds.cpu_warning:
+            levels.append("warning")
+
+    if mem_pct is not None:
+        if mem_pct >= thresholds.memory_critical:
+            levels.append("critical")
+        elif mem_pct >= thresholds.memory_warning:
+            levels.append("warning")
+
+    if pending_pods > thresholds.pending_pods_critical:
+        levels.append("critical")
+    elif pending_pods >= thresholds.pending_pods_warning:
+        levels.append("warning")
+
+    severity = {"critical": 2, "warning": 1, "ok": 0}
+    return max(levels, key=lambda x: severity[x])
+
+
+async def check_node_pool_pressure_handler(cluster_id: str) -> NodePoolPressureOutput:
+    """Core handler for check_node_pool_pressure on a single cluster."""
+    config = resolve_cluster(cluster_id)
+    thresholds = get_thresholds()
+    core_client = K8sCoreClient(config)
+    metrics_client = K8sMetricsClient(config)
+
+    nodes = await core_client.get_nodes()
+    pods = await core_client.get_pods(field_selector="status.phase=Pending")
+
+    # Try to get metrics; graceful degradation if unavailable
+    errors: list[ToolError] = []
+    metrics_by_node: dict[str, dict[str, Any]] = {}
+    try:
+        metrics = await metrics_client.get_node_metrics()
+        for m in metrics:
+            metrics_by_node[m["name"]] = m
+    except Exception:
+        errors.append(
+            ToolError(
+                error="Metrics API unavailable; utilization data omitted",
+                source="metrics-server",
+                cluster=cluster_id,
+                partial_data=True,
+            )
+        )
+
+    # Group nodes by pool
+    pools: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for node in nodes:
+        pool_name = node["pool"] or "unknown"
+        pools[pool_name].append(node)
+
+    # Count pending pods (unscheduled)
+    pending_count = len(pods)
+
+    # Build results per pool
+    pool_results: list[NodePoolResult] = []
+    for pool_name, pool_nodes in sorted(pools.items()):
+        total_cpu_alloc = 0.0
+        total_mem_alloc = 0.0
+        total_cpu_usage = 0.0
+        total_mem_usage = 0.0
+        has_metrics = False
+
+        ready_count = sum(1 for n in pool_nodes if n["conditions"].get("Ready") == "True")
+
+        for node in pool_nodes:
+            total_cpu_alloc += _parse_cpu_millicores(node["allocatable_cpu"])
+            total_mem_alloc += _parse_memory_bytes(node["allocatable_memory"])
+
+            node_metric = metrics_by_node.get(node["name"])
+            if node_metric:
+                has_metrics = True
+                total_cpu_usage += _parse_cpu_millicores(node_metric["cpu_usage"])
+                total_mem_usage += _parse_memory_bytes(node_metric["memory_usage"])
+
+        cpu_pct = (total_cpu_usage / total_cpu_alloc * 100) if has_metrics and total_cpu_alloc > 0 else None
+        mem_pct = (total_mem_usage / total_mem_alloc * 100) if has_metrics and total_mem_alloc > 0 else None
+
+        pressure = _classify_pressure(cpu_pct, mem_pct, pending_count, thresholds)
+
+        pool_results.append(
+            NodePoolResult(
+                pool_name=pool_name,
+                cpu_requests_percent=round(cpu_pct, 1) if cpu_pct is not None else None,
+                memory_requests_percent=round(mem_pct, 1) if mem_pct is not None else None,
+                pending_pods=pending_count,
+                ready_nodes=ready_count,
+                max_nodes=None,  # Can be enriched from AKS API later
+                pressure_level=pressure,
+            )
+        )
+
+    under_pressure = sum(1 for p in pool_results if p.pressure_level != "ok")
+    total_pools = len(pool_results)
+    if under_pressure > 0:
+        summary = f"{under_pressure} of {total_pools} node pools in {cluster_id} under pressure"
+    else:
+        summary = f"All {total_pools} node pools in {cluster_id} are healthy"
+
+    return NodePoolPressureOutput(
+        cluster=cluster_id,
+        pools=pool_results,
+        summary=summary,
+        timestamp=datetime.now(tz=UTC).isoformat(),
+        errors=errors,
+    )
+
+
+async def check_node_pool_pressure_all() -> list[NodePoolPressureOutput]:
+    """Fan-out check_node_pool_pressure to all clusters concurrently."""
+    tasks = [check_node_pool_pressure_handler(cid) for cid in ALL_CLUSTER_IDS]
+    return list(await asyncio.gather(*tasks, return_exceptions=False))

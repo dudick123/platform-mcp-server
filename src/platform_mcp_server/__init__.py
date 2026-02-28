@@ -1,0 +1,1 @@
+"""Platform MCP Server — exposes AKS operational data to AI assistants via MCP."""

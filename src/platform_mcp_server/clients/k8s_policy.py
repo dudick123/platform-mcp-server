@@ -1,0 +1,113 @@
+"""Kubernetes Policy API wrapper — PodDisruptionBudgets."""
+
+from __future__ import annotations
+
+from typing import Any
+
+import structlog
+from kubernetes import client as k8s_client
+from kubernetes import config as k8s_config
+
+from platform_mcp_server.config import ClusterConfig
+
+log = structlog.get_logger()
+
+
+class K8sPolicyClient:
+    """Wrapper around the Kubernetes Policy V1 API for PDB operations."""
+
+    def __init__(self, cluster_config: ClusterConfig) -> None:
+        self._cluster_config = cluster_config
+        self._api: k8s_client.PolicyV1Api | None = None
+
+    def _get_api(self) -> k8s_client.PolicyV1Api:
+        if self._api is None:
+            k8s_config.load_kube_config(context=self._cluster_config.kubeconfig_context)
+            configuration = k8s_client.Configuration.get_default_copy()
+            api_client = k8s_client.ApiClient(configuration)
+            self._api = k8s_client.PolicyV1Api(api_client)
+        return self._api
+
+    async def get_pdbs(self, namespace: str | None = None) -> list[dict[str, Any]]:
+        """List all PodDisruptionBudgets.
+
+        Args:
+            namespace: Filter to a specific namespace. None for all namespaces.
+
+        Returns a list of PDB dicts with spec and status fields.
+        """
+        api = self._get_api()
+        try:
+            if namespace:
+                pdb_list = api.list_namespaced_pod_disruption_budget(namespace)
+            else:
+                pdb_list = api.list_pod_disruption_budget_for_all_namespaces()
+        except Exception:
+            log.error("failed_to_list_pdbs", cluster=self._cluster_config.cluster_id)
+            raise
+
+        results: list[dict[str, Any]] = []
+        for pdb in pdb_list.items:
+            spec = pdb.spec
+            status = pdb.status
+
+            results.append(
+                {
+                    "name": pdb.metadata.name,
+                    "namespace": pdb.metadata.namespace,
+                    "min_available": _int_or_str(spec.min_available) if spec.min_available is not None else None,
+                    "max_unavailable": (
+                        _int_or_str(spec.max_unavailable) if spec.max_unavailable is not None else None
+                    ),
+                    "selector": spec.selector.match_labels if spec.selector and spec.selector.match_labels else {},
+                    "current_healthy": status.current_healthy if status else 0,
+                    "desired_healthy": status.desired_healthy if status else 0,
+                    "disruptions_allowed": status.disruptions_allowed if status else 0,
+                    "expected_pods": status.expected_pods if status else 0,
+                }
+            )
+        return results
+
+    async def evaluate_pdb_satisfiability(
+        self,
+        pdbs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Evaluate which PDBs would block drain operations.
+
+        A PDB blocks drain when:
+        - maxUnavailable=0, OR
+        - disruptions_allowed=0 (minAvailable equals current ready count)
+
+        Args:
+            pdbs: List of PDB dicts from get_pdbs().
+
+        Returns a list of PDB dicts that would block drain, with a 'block_reason' field.
+        """
+        blockers: list[dict[str, Any]] = []
+        for pdb in pdbs:
+            max_unavailable = pdb.get("max_unavailable")
+            disruptions_allowed = pdb.get("disruptions_allowed", 0)
+
+            if max_unavailable == 0:
+                blockers.append({**pdb, "block_reason": "maxUnavailable=0"})
+            elif disruptions_allowed == 0:
+                blockers.append(
+                    {
+                        **pdb,
+                        "block_reason": (
+                            f"minAvailable={pdb.get('min_available')} equals current healthy count "
+                            f"({pdb.get('current_healthy')})"
+                        ),
+                    }
+                )
+        return blockers
+
+
+def _int_or_str(value: Any) -> int | str:
+    """Convert a Kubernetes IntOrString value to int or str."""
+    if isinstance(value, int):
+        return value
+    try:
+        return int(value)
+    except (ValueError, TypeError):  # fmt: skip
+        return str(value)

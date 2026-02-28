@@ -1,0 +1,117 @@
+"""Kubernetes Events API wrapper — NodeUpgrade, NodeReady, pod events."""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+import structlog
+from kubernetes import client as k8s_client
+from kubernetes import config as k8s_config
+
+from platform_mcp_server.config import ClusterConfig
+
+log = structlog.get_logger()
+
+
+class K8sEventsClient:
+    """Wrapper around Kubernetes Events API for upgrade and pod event retrieval."""
+
+    def __init__(self, cluster_config: ClusterConfig) -> None:
+        self._cluster_config = cluster_config
+        self._api: k8s_client.CoreV1Api | None = None
+
+    def _get_api(self) -> k8s_client.CoreV1Api:
+        if self._api is None:
+            k8s_config.load_kube_config(context=self._cluster_config.kubeconfig_context)
+            configuration = k8s_client.Configuration.get_default_copy()
+            api_client = k8s_client.ApiClient(configuration)
+            self._api = k8s_client.CoreV1Api(api_client)
+        return self._api
+
+    async def get_node_events(
+        self,
+        reasons: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get events related to nodes, optionally filtered by reason.
+
+        Args:
+            reasons: Filter to specific event reasons (e.g., ['NodeUpgrade', 'NodeReady']).
+
+        Returns a list of event dicts with timestamp, reason, node name, and message.
+        """
+        api = self._get_api()
+        try:
+            events = api.list_event_for_all_namespaces(
+                field_selector="involvedObject.kind=Node",
+            )
+        except Exception:
+            log.error("failed_to_list_node_events", cluster=self._cluster_config.cluster_id)
+            raise
+
+        results: list[dict[str, Any]] = []
+        for event in events.items:
+            if reasons and event.reason not in reasons:
+                continue
+            results.append(
+                {
+                    "reason": event.reason,
+                    "node_name": event.involved_object.name,
+                    "message": event.message,
+                    "timestamp": _event_timestamp(event),
+                    "count": event.count,
+                }
+            )
+        return results
+
+    async def get_pod_events(
+        self,
+        namespace: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Get events related to pods.
+
+        Args:
+            namespace: Filter to a specific namespace. None for all namespaces.
+
+        Returns a list of event dicts with timestamp, reason, pod name, and message.
+        """
+        api = self._get_api()
+        try:
+            if namespace:
+                events = api.list_namespaced_event(
+                    namespace,
+                    field_selector="involvedObject.kind=Pod",
+                )
+            else:
+                events = api.list_event_for_all_namespaces(
+                    field_selector="involvedObject.kind=Pod",
+                )
+        except Exception:
+            log.error(
+                "failed_to_list_pod_events",
+                cluster=self._cluster_config.cluster_id,
+                namespace=namespace,
+            )
+            raise
+
+        results: list[dict[str, Any]] = []
+        for event in events.items:
+            results.append(
+                {
+                    "reason": event.reason,
+                    "pod_name": event.involved_object.name,
+                    "namespace": event.involved_object.namespace,
+                    "message": event.message,
+                    "timestamp": _event_timestamp(event),
+                    "count": event.count,
+                }
+            )
+        return results
+
+
+def _event_timestamp(event: Any) -> str | None:
+    """Extract the most relevant timestamp from a Kubernetes event."""
+    ts = event.last_timestamp or event.event_time or event.first_timestamp
+    if isinstance(ts, datetime):
+        return ts.isoformat()
+    return str(ts) if ts else None
