@@ -12,7 +12,7 @@
 
 ## 1. Executive Summary
 
-The Platform MCP Server is an internal tool that exposes the GitOps platform's operational data to AI assistants (Claude, Cursor, etc.) through the Model Context Protocol (MCP). It provides platform engineers with natural language access to monitoring, diagnostic, and upgrade-tracking capabilities across the AKS multi-tenant platform — without requiring context-switches between ArgoCD, kubectl, and the Azure portal. All data is sourced directly from the Kubernetes API and Azure AKS REST API using the official Python client libraries.
+The Platform MCP Server is an internal tool that exposes the GitOps platform's operational data to AI assistants (Claude, Cursor, etc.) through the Model Context Protocol (MCP). It provides platform engineers with natural language access to monitoring, diagnostic, and upgrade-tracking capabilities across the AKS multi-tenant platform — six clusters spanning three environments (dev, staging, prod) and two Azure regions (eastus, westus2) — without requiring context-switches between ArgoCD, kubectl, and the Azure portal. All data is sourced directly from the Kubernetes API and Azure AKS REST API using the official Python client libraries.
 
 > **Scope:** Initial scope covers four use cases: (1) AKS node pool memory and CPU pressure monitoring, (2) Kubernetes version upgrade tracking with in-flight upgrade context and per-node status, (3) upgrade duration metrics derived from Kubernetes events, and (4) failed and pending pod diagnostics. All tools are read-only. No writes to Git, cluster, or pipeline systems are in scope for v1.
 
@@ -22,7 +22,7 @@ The Platform MCP Server is an internal tool that exposes the GitOps platform's o
 
 ### 2.1 Current State
 
-Platform engineers managing 100+ tenants across dev, staging, and production currently rely on:
+Platform engineers managing 100+ tenants across six AKS clusters (dev, staging, and production in both eastus and westus2 regions) currently rely on:
 
 - ArgoCD / Akuity SaaS UI for application sync and health state
 - kubectl and az CLI for node-level diagnostics, resource utilization queries, and version inspection
@@ -81,7 +81,7 @@ MCP provides a standardized protocol for exposing platform APIs to AI assistants
 
 ### 4.2 Alex — Platform Engineer
 
-**Background.** Alex is a mid-senior platform engineer responsible for day-to-day cluster health across dev, staging, and prod. Alex writes automation in Python and Typer, is fluent with kubectl, and typically has three terminal windows and the ArgoCD UI open at once. The biggest time sink is correlating information across multiple sources when a tenant reports a problem.
+**Background.** Alex is a mid-senior platform engineer responsible for day-to-day cluster health across all six clusters (dev, staging, prod × eastus, westus2). Alex writes automation in Python and Typer, is fluent with kubectl, and typically has three terminal windows and the ArgoCD UI open at once. The biggest time sink is correlating information across multiple sources when a tenant reports a problem.
 
 **Goals.** Quickly confirm or rule out platform-level causes for tenant issues. Proactively catch capacity problems before they cause incidents. Keep repetitive diagnostic commands out of the workflow.
 
@@ -151,6 +151,8 @@ MCP provides a standardized protocol for exposing platform APIs to AI assistants
 
 ## 5. Use Cases
 
+> **Cluster identifier convention.** All tools use a composite `cluster` parameter that encodes both the environment and region. The valid values are: `dev-eastus`, `dev-westus2`, `staging-eastus`, `staging-westus2`, `prod-eastus`, `prod-westus2`, and `all`. The mapping from cluster identifier to AKS resource group, subscription, and kubeconfig context is defined in `config.py`.
+
 ### UC-01 · Node Pool Pressure Monitoring
 
 #### 5.1.1 Context
@@ -161,7 +163,7 @@ Platform engineers need to quickly assess whether AKS node pools are approaching
 
 - **US-01:** As a platform engineer, I want to ask "what is the current CPU and memory pressure across all node pools in production?" and receive a per-pool breakdown with pressure levels, so I can identify saturation risk without opening Datadog.
 - **US-02:** As an on-call engineer, I want to ask "are there any pending pods due to scheduling failures?" and see which node pools are affected, so I can correlate with autoscaler events during incident triage.
-- **US-03:** As a platform engineer, I want to compare pressure across dev, staging, and production node pools, so I can validate that a load pattern in staging hasn't produced unexpected capacity pressure.
+- **US-03:** As a platform engineer, I want to compare pressure across clusters and regions (e.g., staging-eastus vs. staging-westus2), so I can validate that a load pattern in one region hasn't produced unexpected capacity pressure elsewhere.
 - **US-04:** As a platform tech lead, I want to ask "which node pools are within 10% of autoscaler max?", so I can proactively request node pool quota increases before hitting ceilings.
 
 #### 5.1.3 Tool Specification
@@ -170,7 +172,7 @@ Platform engineers need to quickly assess whether AKS node pools are approaching
 |---|---|
 | Tool name | `check_node_pool_pressure` |
 | Data source | Kubernetes Metrics API (`metrics.k8s.io/v1beta1`) for CPU/memory usage; Kubernetes Core API (`v1`) for node allocatable capacity, node labels (`agentpool`), and pod scheduling state |
-| Parameters | `cluster: enum [dev, staging, prod]` |
+| Parameters | `cluster: enum [dev-eastus, dev-westus2, staging-eastus, staging-westus2, prod-eastus, prod-westus2, all]` |
 | Returns | Per-pool: CPU requests % of allocatable, memory requests % of allocatable, pending pod count, ready node count, max node count from cluster-autoscaler annotation, pressure level (`ok` / `warning` / `critical`) |
 | Latency target | < 3 seconds P95 |
 | Auth | Kubernetes API via kubeconfig resolved from cluster config mapping (`az aks get-credentials` session) |
@@ -183,36 +185,40 @@ Platform engineers need to quickly assess whether AKS node pools are approaching
 | 🟡 Warning | ≥ 75% | ≥ 80% | > 0 |
 | ✅ OK | < 75% | < 80% | 0 |
 
+> **Pressure level resolution:** A node pool's overall pressure level is the **highest severity** across all three metrics (CPU, memory, pending pods). For example, a pool at 91% CPU (critical), 82% memory (warning), and 0 pending pods (ok) is reported as `critical`.
+>
 > Threshold values are externalized to `config.py` and should be agreed with the team. The defaults above are starting points based on typical AKS workload patterns.
 
 ---
 
-### UC-01b · Failed & Pending Pod Diagnostics
+### UC-03 · Failed & Pending Pod Diagnostics
 
-#### 5.1b.1 Context
+#### 5.3.1 Context
 
 Pending and failed pods are often the first visible symptom of a deeper platform problem — node pressure, image registry issues, misconfigured resource requests, OOM kills, or scheduling constraint mismatches. Today, diagnosing the cause requires manually running `kubectl describe pod`, `kubectl get events`, and cross-referencing node state. This tool surfaces root cause context in a single query.
 
-#### 5.1b.2 User Stories
+#### 5.3.2 User Stories
 
-- **US-10:** As an on-call engineer, I want to ask "why are pods pending in the prod cluster?" and receive a grouped breakdown by failure reason, so I can distinguish between a scheduling constraint issue and a node capacity issue without running kubectl.
-- **US-11:** As a platform engineer, I want to ask "show me all failed pods in the frontend namespace" and see the failure reason, last restart count, and relevant events, so I can quickly assess whether this is a transient crash or a systemic problem.
-- **US-12:** As an on-call engineer, I want to ask "are there any OOMKilled pods in the last 30 minutes?" and see which workloads and namespaces are affected, so I can correlate with a memory pressure spike.
-- **US-13:** As a platform engineer, I want to ask "are there any image pull failures across the cluster?" so I can identify registry connectivity or credential issues before they spread to more pods.
-- **US-14:** As a platform tech lead, I want to ask "what is the current pod failure distribution by reason across production?" so I can identify systemic patterns that warrant a configuration or capacity change.
+- **US-05:** As an on-call engineer, I want to ask "why are pods pending in the prod cluster?" and receive a grouped breakdown by failure reason, so I can distinguish between a scheduling constraint issue and a node capacity issue without running kubectl.
+- **US-06:** As a platform engineer, I want to ask "show me all failed pods in the frontend namespace" and see the failure reason, last restart count, and relevant events, so I can quickly assess whether this is a transient crash or a systemic problem.
+- **US-07:** As an on-call engineer, I want to ask "are there any OOMKilled pods in the last 30 minutes?" and see which workloads and namespaces are affected, so I can correlate with a memory pressure spike.
+- **US-08:** As a platform engineer, I want to ask "are there any image pull failures across the cluster?" so I can identify registry connectivity or credential issues before they spread to more pods.
+- **US-09:** As a platform tech lead, I want to ask "what is the current pod failure distribution by reason across production?" so I can identify systemic patterns that warrant a configuration or capacity change.
 
-#### 5.1b.3 Tool Specification
+#### 5.3.3 Tool Specification
 
 | Field | Value |
 |---|---|
 | Tool name | `get_pod_health` |
 | Data source | Kubernetes Core API (`v1`): `pods` resource for status, phase, container state, restart counts; `events` resource filtered by `involvedObject.kind=Pod` for root cause messages |
-| Parameters | `cluster: enum [dev, staging, prod]`, `namespace: str (optional, default: all)`, `status_filter: enum [pending, failed, all] (default: all)`, `lookback_minutes: int (default: 30)` |
+| Parameters | `cluster: enum [dev-eastus, dev-westus2, staging-eastus, staging-westus2, prod-eastus, prod-westus2, all]`, `namespace: str (optional, default: all)`, `status_filter: enum [pending, failed, all] (default: all)`, `lookback_minutes: int (default: 30)` |
 | Returns | Per-pod: name, namespace, node, status, reason, restart count, last event message, age; grouped summary by failure reason |
 | Latency target | < 4 seconds P95 |
 | Auth | Kubernetes API via kubeconfig resolved from cluster config mapping |
 
-#### 5.1b.4 Pod Failure Reason Taxonomy
+> **Lookback semantics:** `lookback_minutes` filters *resolved or transient* failures by event time. Pods that are **currently in an unhealthy state** (Pending, CrashLoopBackOff, ImagePullBackOff, etc.) are always included regardless of age — a pod that has been Pending for 3 hours is still an active problem and must appear in results even with `lookback_minutes=30`.
+
+#### 5.3.4 Pod Failure Reason Taxonomy
 
 | Reason | Category | Typical Cause |
 |---|---|---|
@@ -231,15 +237,15 @@ Pending and failed pods are often the first visible symptom of a deeper platform
 
 #### 5.2.1 Context
 
-AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchestrated with Terraform, following a low-risk wave-based process: dev → staging → prod. Node pool upgrades are designed to complete within 60 minutes under normal conditions. Engineers need visibility into current versions, available upgrades, upgrade eligibility, and the upgrade status of in-flight operations without navigating the Azure portal. When an upgrade is active, engineers additionally need per-node upgrade state, elapsed duration, an estimated completion time derived from Kubernetes node events, and — critically — any PodDisruptionBudget violations that may be blocking cordon and drain, so they can distinguish a healthy upgrade in progress from one that has stalled due to a workload constraint.
+Engineers need visibility into current Kubernetes versions, available upgrades, upgrade eligibility, and the status of in-flight operations without navigating the Azure portal. When an upgrade is active, engineers additionally need per-node upgrade state, elapsed duration, an estimated completion time derived from Kubernetes node events, and any PodDisruptionBudget violations that may be blocking cordon and drain — so they can distinguish a healthy upgrade in progress from one that has stalled due to a workload constraint.
 
 #### 5.2.2 User Stories
 
-- **US-05:** As a platform tech lead, I want to ask "what Kubernetes versions are running across all clusters and node pools?" and see a consolidated view, so I can identify version drift between environments.
-- **US-06:** As a platform engineer, I want to ask "what upgrades are available for the production cluster?" and see the available versions with Microsoft's support status, so I can plan upgrade windows.
-- **US-07:** As an on-call engineer, I want to ask "is there an active upgrade running on any cluster right now?" and get current upgrade state, which node pool is upgrading, and how long it has been running, so I can determine whether an incident is upgrade-related.
-- **US-08:** As a platform tech lead, I want to ask "which node pools are on deprecated Kubernetes versions?" so I can prioritize upgrade sequencing before end-of-support dates.
-- **US-09:** As a platform engineer, I want to ask "what is the minimum supported version for AKS right now?" so I can assess our upgrade urgency relative to Microsoft's support window.
+- **US-10:** As a platform tech lead, I want to ask "what Kubernetes versions are running across all clusters and node pools?" and see a consolidated view, so I can identify version drift between environments.
+- **US-11:** As a platform engineer, I want to ask "what upgrades are available for the production cluster?" and see the available versions with Microsoft's support status, so I can plan upgrade windows.
+- **US-12:** As an on-call engineer, I want to ask "is there an active upgrade running on any cluster right now?" and get current upgrade state, which node pool is upgrading, and how long it has been running, so I can determine whether an incident is upgrade-related.
+- **US-13:** As a platform tech lead, I want to ask "which node pools are on deprecated Kubernetes versions?" so I can prioritize upgrade sequencing before end-of-support dates.
+- **US-14:** As a platform engineer, I want to ask "what is the minimum supported version for AKS right now?" so I can assess our upgrade urgency relative to Microsoft's support window.
 - **US-15:** As an on-call engineer, I want to ask "show me the node-by-node upgrade status for the prod system pool" and see which nodes are upgraded, upgrading, cordoned, or pending, so I can assess upgrade progress and spot stalled nodes.
 - **US-16:** As a platform engineer, I want to ask "how long has the current upgrade been running and when is it expected to finish?" and receive an elapsed time and estimated remaining duration, so I can set expectations with tenants. Given our upgrades normally complete within 60 minutes, any estimate significantly beyond that should be flagged.
 - **US-17:** As a platform tech lead, I want to ask "is the current upgrade taking longer than previous upgrades for this node pool?" so I can determine whether to investigate or escalate to Microsoft support.
@@ -251,7 +257,7 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 |---|---|
 | Tool name | `get_kubernetes_upgrade_status` |
 | Data source | Azure AKS REST API (`ManagedClusters`, `AgentPools`, `upgradeProfiles`) |
-| Parameters | `cluster: enum [dev, staging, prod, all]` |
+| Parameters | `cluster: enum [dev-eastus, dev-westus2, staging-eastus, staging-westus2, prod-eastus, prod-westus2, all]` |
 | Returns | Control plane version, available upgrades, per-node-pool version and upgrade eligibility, active upgrade state, support status per version |
 | Latency target | < 5 seconds P95 (AKS API is not cached) |
 | Auth | Azure `DefaultCredential` (picks up existing `az login` session via env) |
@@ -262,8 +268,8 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 |---|---|
 | Tool name | `get_upgrade_progress` |
 | Data source | Azure AKS REST API (`AgentPools`) for pool-level state; Kubernetes Events API (`reason: NodeUpgrade`, `reason: NodeReady`) for per-node timing |
-| Parameters | `cluster: enum [dev, staging, prod]`, `node_pool: str (optional, default: all upgrading pools)` |
-| Returns | Per-node: name, current state (`upgraded`, `upgrading`, `cordoned`, `pending`), node version, time in current state; pool-level: nodes total, nodes upgraded, nodes remaining, elapsed duration, estimated remaining duration, upgrade start timestamp |
+| Parameters | `cluster: enum [dev-eastus, dev-westus2, staging-eastus, staging-westus2, prod-eastus, prod-westus2, all]`, `node_pool: str (optional, default: all upgrading pools)` |
+| Returns | Per-node: name, current state (`upgraded`, `upgrading`, `cordoned`, `pdb_blocked`, `pending`, `stalled`), node version, time in current state; pool-level: nodes total, nodes upgraded, nodes remaining, elapsed duration, estimated remaining duration, upgrade start timestamp |
 | Latency target | < 5 seconds P95 |
 | Auth | Azure `DefaultCredential` + Kubernetes API session |
 
@@ -273,7 +279,7 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 |---|---|
 | Tool name | `get_upgrade_duration_metrics` |
 | Data source | Kubernetes Events API (`NodeUpgrade`, `NodeReady`, `NodeNotReady` events) for the current in-progress upgrade; AKS Activity Log for completed historical upgrade records (retained for 90 days — well beyond the 1-hour Kubernetes event TTL) |
-| Parameters | `cluster: enum [dev, staging, prod]`, `node_pool: str`, `history_count: int (default: 5)` |
+| Parameters | `cluster: enum [dev-eastus, dev-westus2, staging-eastus, staging-westus2, prod-eastus, prod-westus2, all]`, `node_pool: str`, `history_count: int (default: 5)` |
 | Returns | Current upgrade: elapsed time, estimated remaining (based on mean time-per-node from current run); Historical: last N upgrade durations per pool, mean duration, P90 duration, slowest and fastest node in current run; over-time flag if elapsed exceeds 60-minute expected baseline |
 | Latency target | < 6 seconds P95 |
 | Auth | Azure `DefaultCredential` + Kubernetes API session |
@@ -286,7 +292,7 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 |---|---|
 | Tool name | `check_pdb_upgrade_risk` |
 | Data source | Kubernetes Policy API (`policy/v1`): `poddisruptionbudgets` across all namespaces; Kubernetes Core API (`v1`): current pod counts per workload to evaluate PDB satisfiability |
-| Parameters | `cluster: enum [dev, staging, prod]`, `node_pool: str (optional)`, `mode: enum [preflight, live] (default: preflight)` |
+| Parameters | `cluster: enum [dev-eastus, dev-westus2, staging-eastus, staging-westus2, prod-eastus, prod-westus2, all]`, `node_pool: str (optional)`, `mode: enum [preflight, live] (default: preflight)` |
 | Returns | **Preflight mode:** List of PDBs where `maxUnavailable=0` or `minAvailable` equals current ready replica count — i.e., PDBs that would block drain if any pod were evicted; affected workload name, namespace, current ready/desired counts, PDB rule. **Live mode (during active upgrade):** PDBs currently blocking eviction on cordoned nodes, with the specific pods and nodes affected and time blocked. |
 | Latency target | < 4 seconds P95 |
 | Auth | Kubernetes API via kubeconfig |
@@ -320,7 +326,7 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 | FR-06 | `get_kubernetes_upgrade_status` queries AKS API for control plane version, node pool versions, and upgrade availability | UC-02 | Must Have |
 | FR-07 | Tool surfaces active upgrade state (in-progress vs. idle) per cluster and node pool | UC-02 | Must Have |
 | FR-08 | Tool flags node pools on deprecated / near-end-of-support versions | UC-02 | Should Have |
-| FR-09 | Server supports `cluster=all` parameter to query all three clusters in parallel | UC-01, UC-02 | Should Have |
+| FR-09 | All tools support `cluster=all` parameter to query all six clusters in parallel | UC-01, UC-02, UC-03 | Should Have |
 | FR-10 | Tool docstrings accurately describe when and how to invoke each tool (used by LLM for tool selection) | All | Must Have |
 | FR-11 | Credentials are sourced exclusively from environment variables and kubeconfig; no hardcoded secrets | All | Must Have |
 | FR-12 | All tool errors return structured error messages (not raw stack traces) suitable for LLM consumption | All | Must Have |
@@ -333,18 +339,21 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 | FR-19 | Server exposes `get_upgrade_duration_metrics` tool that returns elapsed, estimated remaining, and historical upgrade durations per node pool | UC-02 | Must Have |
 | FR-20 | Duration estimation uses mean seconds-per-node from the current upgrade run applied to remaining node count | UC-02 | Must Have |
 | FR-21 | Historical duration data covers last 5 upgrades by default (configurable); sourced from AKS Activity Log (90-day retention); includes mean, P90, min, and max per-pool | UC-02 | Should Have |
-| FR-22 | Current run per-node timing is derived from Kubernetes `NodeUpgrade`/`NodeReady` event deltas (Events API, sufficient TTL for a single upgrade run); historical records use AKS Activity Log to avoid the 1-hour Kubernetes event TTL constraint | UC-02 | Must Have |
-| FR-23 | Server exposes `get_pod_health` tool that returns pending and failed pods with failure reason, restart count, and last event message | UC-01b | Must Have |
-| FR-24 | `get_pod_health` accepts `namespace`, `status_filter`, and `lookback_minutes` parameters | UC-01b | Must Have |
-| FR-25 | Tool groups results by failure reason category (scheduling, runtime, registry, config) in addition to per-pod detail | UC-01b | Must Have |
-| FR-26 | Tool surfaces the most recent Kubernetes event message per pod to provide root cause context without requiring kubectl | UC-01b | Must Have |
-| FR-27 | Tool detects and flags `OOMKilled` pods specifically, sourcing container name and memory limit from the pod's `containerStatuses[].lastState.terminated` fields | UC-01b | Should Have |
-| FR-28 | Response latency for `get_pod_health` is < 4s P95 | UC-01b | Should Have |
+| FR-22a | Current run per-node timing is derived from Kubernetes `NodeUpgrade`/`NodeReady` event deltas via the Events API, which has sufficient TTL for a single upgrade run | UC-02 | Must Have |
+| FR-22b | Historical upgrade duration records are sourced from the AKS Activity Log (90-day retention) to avoid the 1-hour Kubernetes event TTL constraint | UC-02 | Must Have |
+| FR-23 | Server exposes `get_pod_health` tool that returns pending and failed pods with failure reason, restart count, and last event message | UC-03 | Must Have |
+| FR-24 | `get_pod_health` accepts `namespace`, `status_filter`, and `lookback_minutes` parameters | UC-03 | Must Have |
+| FR-25 | Tool groups results by failure reason category (scheduling, runtime, registry, config) in addition to per-pod detail | UC-03 | Must Have |
+| FR-26 | Tool surfaces the most recent Kubernetes event message per pod to provide root cause context without requiring kubectl | UC-03 | Must Have |
+| FR-27 | Tool detects and flags `OOMKilled` pods specifically, sourcing container name and memory limit from the pod's `containerStatuses[].lastState.terminated` fields | UC-03 | Should Have |
+| FR-28 | Response latency for `get_pod_health` is < 4s P95 | UC-03 | Should Have |
 | FR-29 | Server exposes `check_pdb_upgrade_risk` tool with `preflight` and `live` modes | UC-02 | Must Have |
 | FR-30 | In `preflight` mode, `check_pdb_upgrade_risk` evaluates all PDBs across all namespaces and flags any where `maxUnavailable=0` or `minAvailable` equals the current ready pod count — indicating drain would be blocked if any pod were evicted | UC-02 | Must Have |
 | FR-31 | In `live` mode, `check_pdb_upgrade_risk` identifies PDBs currently blocking eviction on cordoned nodes, reporting the PDB name, namespace, affected pods, and time the block has been active | UC-02 | Must Have |
 | FR-32 | When a node is in `pdb_blocked` state in `get_upgrade_progress`, the output includes a direct reference to the blocking PDB and a suggestion to run `check_pdb_upgrade_risk(mode="live")` for full detail | UC-02 | Must Have |
 | FR-33 | `get_upgrade_duration_metrics` flags any estimated or elapsed total upgrade duration exceeding 60 minutes as potentially anomalous, with a note that ADO pipeline upgrades are expected to complete within that window | UC-02 | Should Have |
+| FR-34 | `get_pod_health` caps results at 50 pods per response; when truncated, the response includes the total matching count and a note that results were capped | UC-03 | Should Have |
+| FR-35 | In `preflight` mode, when `node_pool` is provided, `check_pdb_upgrade_risk` filters to PDBs governing pods with replicas currently scheduled on the specified node pool; when `node_pool` is omitted, all PDBs cluster-wide are evaluated | UC-02 | Must Have |
 
 ---
 
@@ -357,7 +366,7 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 - Azure authentication uses `DefaultAzureCredential`, inheriting the engineer's existing `az login` session — no service principal credentials are stored locally
 - Kubernetes API access uses kubeconfig resolved from the cluster config mapping; the kubeconfig context is explicitly set per-call to prevent cross-cluster contamination
 - All tools are read-only; the server must not expose any write operations against AKS, ArgoCD, Azure DevOps, or Git
-- Tool output must be scrubbed of internal IP addresses and sensitive resource identifiers before being returned to the LLM context
+- Tool output must be scrubbed of internal IP addresses, Azure subscription IDs, and resource group names before being returned to the LLM context. Node names (e.g., `aks-userpool-000011`) are operational identifiers required for troubleshooting and are safe to surface
 
 ### 7.2 Reliability
 
@@ -372,7 +381,21 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 - Each tool must have its own module under `tools/` to enable independent testing and future extension
 - Pydantic models must be used for all tool inputs and outputs to enable schema validation and documentation generation
 
-### 7.4 Observability
+### 7.4 Error Model
+
+All tools must return errors using a consistent Pydantic model. Raw stack traces must never reach the LLM context.
+
+```python
+class ToolError(BaseModel):
+    error: str              # Human-readable error summary suitable for LLM consumption
+    source: str             # Data source that failed (e.g., "metrics-server", "aks-api")
+    cluster: str            # Cluster context where the error occurred
+    partial_data: bool      # True if the response includes partial results alongside this error
+```
+
+When `partial_data` is `True`, the tool response includes both the error and whatever data was successfully retrieved from other sources. This enables graceful degradation — for example, returning Core API data alongside a metrics-server unavailability error.
+
+### 7.5 Observability
 
 - Structured logging (JSON) to stderr — MCP clients forward stderr to their log facilities
 - Each tool invocation logs: tool name, parameters, data source latency, and success/failure
@@ -386,9 +409,9 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 |---|---|---|
 | Node pool CPU/memory pressure query via Kubernetes Metrics API | ✅ In Scope | Core UC-01 |
 | Node pool pending pod count via Kubernetes Core API | ✅ In Scope | Required for scheduling pressure signal |
-| Failed & pending pod diagnostics with root cause | ✅ In Scope | Core UC-01b |
-| OOMKilled pod detection with container and limit detail | ✅ In Scope | Core UC-01b |
-| Pod failure grouping by reason category | ✅ In Scope | Core UC-01b |
+| Failed & pending pod diagnostics with root cause | ✅ In Scope | Core UC-03 |
+| OOMKilled pod detection with container and limit detail | ✅ In Scope | Core UC-03 |
+| Pod failure grouping by reason category | ✅ In Scope | Core UC-03 |
 | Kubernetes version query across clusters | ✅ In Scope | Core UC-02 |
 | Available upgrade paths per cluster | ✅ In Scope | Core UC-02 |
 | Active upgrade state detection | ✅ In Scope | Core UC-02 |
@@ -424,31 +447,52 @@ AKS Kubernetes version upgrades are performed via Azure DevOps pipelines orchest
 
 ### 9.2 Project Layout
 
-```
-platform-mcp/
-├── server.py                   # MCP server entry point; tool registrations
-├── config.py                   # Threshold config, cluster-to-resource-group mapping, kubeconfig context map
-├── models.py                   # Pydantic models for all tool inputs/outputs
-├── tools/
-│   ├── node_pools.py           # check_node_pool_pressure implementation
-│   ├── pod_health.py           # get_pod_health implementation
-│   ├── k8s_upgrades.py         # get_kubernetes_upgrade_status implementation
-│   ├── upgrade_progress.py     # get_upgrade_progress (per-node state) implementation
-│   ├── upgrade_metrics.py      # get_upgrade_duration_metrics implementation
-│   └── pdb_check.py            # check_pdb_upgrade_risk (preflight + live modes)
-├── clients/
-│   ├── k8s_core.py             # Kubernetes Core API wrapper (nodes, pods, namespaces)
-│   ├── k8s_metrics.py          # Kubernetes Metrics API wrapper (CPU/memory usage)
-│   ├── k8s_events.py           # Kubernetes Events API wrapper (NodeUpgrade, NodeReady, pod events)
-│   ├── k8s_policy.py           # Kubernetes Policy API wrapper (PodDisruptionBudgets)
-│   └── azure_aks.py            # AKS REST API wrapper (versions, upgrade profiles, activity log)
+```text
+platform-mcp-server/
+├── src/
+│   └── platform_mcp_server/
+│       ├── __init__.py
+│       ├── server.py               # MCP server entry point; tool registrations
+│       ├── config.py               # Threshold config, cluster→region/resource-group mapping, kubeconfig context map
+│       ├── models.py               # Pydantic models for all tool inputs/outputs
+│       ├── tools/
+│       │   ├── __init__.py
+│       │   ├── node_pools.py       # check_node_pool_pressure
+│       │   ├── pod_health.py       # get_pod_health
+│       │   ├── k8s_upgrades.py     # get_kubernetes_upgrade_status
+│       │   ├── upgrade_progress.py # get_upgrade_progress (per-node state)
+│       │   ├── upgrade_metrics.py  # get_upgrade_duration_metrics
+│       │   └── pdb_check.py        # check_pdb_upgrade_risk (preflight + live)
+│       └── clients/
+│           ├── __init__.py
+│           ├── k8s_core.py         # Kubernetes Core API wrapper (nodes, pods, namespaces)
+│           ├── k8s_metrics.py      # Kubernetes Metrics API wrapper (CPU/memory usage)
+│           ├── k8s_events.py       # Kubernetes Events API wrapper (NodeUpgrade, NodeReady, pod events)
+│           ├── k8s_policy.py       # Kubernetes Policy API wrapper (PodDisruptionBudgets)
+│           └── azure_aks.py        # AKS REST API wrapper (versions, upgrade profiles, activity log)
 ├── tests/
+│   ├── conftest.py                 # Shared fixtures: mock K8s client, mock Azure client, cluster config
+│   ├── fixtures/                   # Static test data (JSON responses, node lists, event payloads)
 │   ├── test_node_pools.py
 │   ├── test_pod_health.py
 │   ├── test_k8s_upgrades.py
 │   ├── test_upgrade_progress.py
 │   ├── test_upgrade_metrics.py
-│   └── test_pdb_check.py
+│   ├── test_pdb_check.py
+│   └── test_clients/
+│       ├── conftest.py
+│       ├── test_k8s_core.py
+│       ├── test_k8s_metrics.py
+│       ├── test_k8s_events.py
+│       ├── test_k8s_policy.py
+│       └── test_azure_aks.py
+├── .devcontainer/
+│   └── devcontainer.json           # Dev container configuration
+├── .vscode/
+│   ├── settings.json               # Workspace settings (formatter, linter, interpreter)
+│   └── extensions.json             # Recommended extensions
+├── .pre-commit-config.yaml
+├── uv.lock
 └── pyproject.toml
 ```
 
@@ -469,7 +513,7 @@ platform-mcp/
 }
 ```
 
-> Kubernetes context switching between clusters is handled internally by the server using the cluster config mapping in `config.py`. Engineers only need a single merged kubeconfig with contexts for all three clusters, which is the standard output of running `az aks get-credentials` for each cluster.
+> Kubernetes context switching between clusters is handled internally by the server using the cluster config mapping in `config.py`. Engineers only need a single merged kubeconfig with contexts for all six clusters, which is the standard output of running `az aks get-credentials` for each cluster.
 
 ---
 
@@ -478,11 +522,11 @@ platform-mcp/
 | Milestone | Deliverable | Target | Priority |
 |---|---|---|---|
 | M1 – Scaffolding | Project layout, FastMCP server running locally, Claude Desktop connected, Kubernetes client configured with multi-cluster context map | Week 1 | P2 – Medium |
-| M2 – UC-01 Alpha | `check_node_pool_pressure` returning live data from Kubernetes Metrics API and Core API for dev cluster | Week 2 | P2 – Medium |
-| M3 – UC-01b Alpha | `get_pod_health` returning live pod state and events for dev cluster, grouped by failure reason | Week 2 | P1 – High |
-| M4 – UC-01 Complete | All three clusters; thresholds externalized; error handling for metrics-server unavailability | Week 3 | P1 – High |
-| M5 – UC-01b Complete | All clusters; OOMKill detail from `containerStatuses`; namespace and lookback filtering | Week 3 | P1 – High |
-| M6 – UC-02 Alpha | `get_kubernetes_upgrade_status` returning live AKS data for dev cluster | Week 3 | P1 – High |
+| M2 – UC-01 Alpha | `check_node_pool_pressure` returning live data from Kubernetes Metrics API and Core API for a single cluster (e.g., dev-eastus) | Week 2 | P2 – Medium |
+| M3 – UC-03 Alpha | `get_pod_health` returning live pod state and events for a single cluster (e.g., dev-eastus), grouped by failure reason | Week 2 | P1 – High |
+| M4 – UC-01 Complete | All six clusters; thresholds externalized; error handling for metrics-server unavailability | Week 3 | P1 – High |
+| M5 – UC-03 Complete | All clusters; OOMKill detail from `containerStatuses`; namespace and lookback filtering | Week 3 | P1 – High |
+| M6 – UC-02 Alpha | `get_kubernetes_upgrade_status` returning live AKS data for a single cluster (e.g., dev-eastus) | Week 3 | P1 – High |
 | M7 – UC-02 PDB Check | `check_pdb_upgrade_risk` preflight and live modes operational; integrated with `get_upgrade_progress` output | Week 4 | P1 – High |
 | M8 – UC-02 In-Flight | `get_upgrade_progress` returning per-node state with `pdb_blocked` and `stalled` states; 60-min anomaly flag active | Week 4 | P1 – High |
 | M9 – UC-02 Duration | `get_upgrade_duration_metrics` with current run timing from Events API and historical baselines from AKS Activity Log | Week 5 | P1 – High |
@@ -515,12 +559,15 @@ platform-mcp/
 - **OQ-01:** Should thresholds be team-wide config (committed to the repo) or per-engineer overrides? Recommend committed defaults with env var overrides.
 - **OQ-02:** What is the right time window for pressure metrics derived from the Kubernetes Metrics API? The API returns a point-in-time snapshot, not an average — should the tool call multiple times and average, or accept that a single snapshot may be momentary?
 - **OQ-03:** Should `get_upgrade_progress` surface node pool cordon/drain status even when no upgrade is active, or only during in-flight upgrades?
-- **OQ-04:** Do we want a `cluster=all` parallel query mode in v1, or is per-cluster querying sufficient given the team size?
 - **OQ-05:** Should the server be added to the platform's internal developer portal as a documented tool, or remain informal documentation in the repo README?
-- **OQ-06 — Resolved:** Historical upgrade duration data will be sourced from the AKS Activity Log (90-day retention), which is not subject to the Kubernetes event TTL constraint. Kubernetes Events API is used only for current in-progress run timing.
 - **OQ-07:** Should `get_pod_health` include log tail (last N lines) per failing pod via the Kubernetes logs API, or is the event message sufficient for v1? Log tail significantly increases latency and output size.
 - **OQ-08:** For `OOMKilled` pods, should the tool recommend a new memory limit based on the last observed working RSS (available from `containerStatuses[].lastState`), or only report the breach?
 - **OQ-09:** Should `check_pdb_upgrade_risk` in `preflight` mode be surfaced automatically when an engineer asks about upgrade readiness, or only when explicitly called? Recommend the former — automatically include PDB preflight output in any response involving upgrade planning.
+
+### Resolved Questions
+
+- **OQ-04 — Resolved:** All tools support `cluster=all` parallel query mode in v1. See FR-09.
+- **OQ-06 — Resolved:** Historical upgrade duration data is sourced from the AKS Activity Log (90-day retention), which is not subject to the Kubernetes event TTL constraint. Kubernetes Events API is used only for current in-progress run timing. See FR-22a/FR-22b.
 
 ---
 
@@ -536,23 +583,38 @@ Claude: [calls check_node_pool_pressure(cluster="all")]
 
 Cluster health snapshot — 08:47 UTC
 
-dev
+dev-eastus
   system-pool      ✅  CPU: 22%  |  Memory: 48%  |  Nodes: 2
   user-pool        ✅  CPU: 41%  |  Memory: 53%  |  Nodes: 6
   No failing pods.
 
-staging
+dev-westus2
+  system-pool      ✅  CPU: 20%  |  Memory: 45%  |  Nodes: 2
+  user-pool        ✅  CPU: 38%  |  Memory: 50%  |  Nodes: 6
+  No failing pods.
+
+staging-eastus
   system-pool      ✅  CPU: 19%  |  Memory: 51%  |  Nodes: 2
   user-pool        🟡  CPU: 76%  |  Memory: 74%  |  Nodes: 8  (1 node from autoscaler max)
   1 failing pod: spark-test-job-001 (data-pipeline) — CrashLoopBackOff,
   "Error: connection refused to postgres:5432", restarts: 4
 
-prod
+staging-westus2
+  system-pool      ✅  CPU: 18%  |  Memory: 49%  |  Nodes: 2
+  user-pool        ✅  CPU: 52%  |  Memory: 61%  |  Nodes: 8
+  No failing pods.
+
+prod-eastus
   system-pool      ✅  CPU: 31%  |  Memory: 58%  |  Nodes: 3
   user-pool        ✅  CPU: 67%  |  Memory: 71%  |  Nodes: 12
   No failing pods.
 
-⚠️  Staging user-pool is 1 node from autoscaler ceiling (8/9 max).
+prod-westus2
+  system-pool      ✅  CPU: 29%  |  Memory: 55%  |  Nodes: 3
+  user-pool        ✅  CPU: 63%  |  Memory: 68%  |  Nodes: 12
+  No failing pods.
+
+⚠️  staging-eastus user-pool is 1 node from autoscaler ceiling (8/9 max).
     Consider reviewing before today's load test.
 ```
 
@@ -561,13 +623,13 @@ prod
 ### B. Sam (On-Call Engineer) — 2am Incident Triage
 
 ```
-Sam: "PagerDuty just fired for prod. What's happening?"
+Sam: "PagerDuty just fired for prod-eastus. What's happening?"
 
-Claude: [calls check_node_pool_pressure(cluster="prod")]
-        [calls get_pod_health(cluster="prod", status_filter="all", lookback_minutes=15)]
-        [calls get_upgrade_progress(cluster="prod")]
+Claude: [calls check_node_pool_pressure(cluster="prod-eastus")]
+        [calls get_pod_health(cluster="prod-eastus", status_filter="all", lookback_minutes=15)]
+        [calls get_upgrade_progress(cluster="prod-eastus")]
 
-🔴 Prod snapshot — 02:14 UTC
+🔴 prod-eastus snapshot — 02:14 UTC
 
 Node pools:
   system-pool      ✅  CPU: 33%  |  Memory: 61%  |  Nodes: 3
@@ -590,11 +652,11 @@ expansion is needed, or whether acme-corp has a runaway workload.
 ### C. Sam (On-Call Engineer) — Upgrade-Related Incident
 
 ```
-Sam: "Tenants are reporting pod evictions in prod. Is anything platform-side happening?"
+Sam: "Tenants are reporting pod evictions in prod-eastus. Is anything platform-side happening?"
 
-Claude: [calls get_upgrade_progress(cluster="prod")]
+Claude: [calls get_upgrade_progress(cluster="prod-eastus")]
 
-🔵 Upgrade in progress — prod / user-pool-general (1.29.8 → 1.30.5)
+🔵 Upgrade in progress — prod-eastus / user-pool-general (1.29.8 → 1.30.5)
    Started: 34 minutes ago  |  Estimated remaining: ~36m
 
 Node progress (12 total):
@@ -607,9 +669,9 @@ drain workloads to other nodes before being upgraded. The 2 nodes currently
 draining (aks-userpool-000006, 000007) will complete drain in approximately
 4–6 minutes based on current pace. No stalled nodes detected.
 
-Recommended tenant message: "The prod cluster is undergoing a planned Kubernetes
-upgrade. Pod evictions in the next ~36 minutes are expected as nodes are
-cycled. No action needed on your end."
+Recommended tenant message: "The prod-eastus cluster is undergoing a planned
+Kubernetes upgrade. Pod evictions in the next ~36 minutes are expected as nodes
+are cycled. No action needed on your end."
 ```
 
 ---
@@ -624,19 +686,28 @@ Claude: [calls get_kubernetes_upgrade_status(cluster="all")]
 
 Kubernetes version summary — fleet-wide
 
-Cluster   Node Pool        Version   Support Status         Available Upgrades
-dev       control-plane    1.28.9    ⛔ EOS in 3 weeks      1.29.9, 1.30.5
-dev       system-pool      1.28.9    ⛔ EOS in 3 weeks      —
-dev       user-pool        1.28.9    ⛔ EOS in 3 weeks      —
-staging   control-plane    1.29.8    ✅ Until Sep 2026       1.30.5
-staging   system-pool      1.29.8    ✅ Until Sep 2026       —
-staging   user-pool        1.29.8    ✅ Until Sep 2026       —
-prod      control-plane    1.29.8    ✅ Until Sep 2026       1.30.5
-prod      system-pool      1.29.8    ✅ Until Sep 2026       —
-prod      user-pool        1.29.8    ✅ Until Sep 2026       —
+Cluster          Node Pool        Version   Support Status         Available Upgrades
+dev-eastus       control-plane    1.28.9    ⛔ EOS in 3 weeks      1.29.9, 1.30.5
+dev-eastus       system-pool      1.28.9    ⛔ EOS in 3 weeks      —
+dev-eastus       user-pool        1.28.9    ⛔ EOS in 3 weeks      —
+dev-westus2      control-plane    1.28.9    ⛔ EOS in 3 weeks      1.29.9, 1.30.5
+dev-westus2      system-pool      1.28.9    ⛔ EOS in 3 weeks      —
+dev-westus2      user-pool        1.28.9    ⛔ EOS in 3 weeks      —
+staging-eastus   control-plane    1.29.8    ✅ Until Sep 2026       1.30.5
+staging-eastus   system-pool      1.29.8    ✅ Until Sep 2026       —
+staging-eastus   user-pool        1.29.8    ✅ Until Sep 2026       —
+staging-westus2  control-plane    1.29.8    ✅ Until Sep 2026       1.30.5
+staging-westus2  system-pool      1.29.8    ✅ Until Sep 2026       —
+staging-westus2  user-pool        1.29.8    ✅ Until Sep 2026       —
+prod-eastus      control-plane    1.29.8    ✅ Until Sep 2026       1.30.5
+prod-eastus      system-pool      1.29.8    ✅ Until Sep 2026       —
+prod-eastus      user-pool        1.29.8    ✅ Until Sep 2026       —
+prod-westus2     control-plane    1.29.8    ✅ Until Sep 2026       1.30.5
+prod-westus2     system-pool      1.29.8    ✅ Until Sep 2026       —
+prod-westus2     user-pool        1.29.8    ✅ Until Sep 2026       —
 
-⚠️  URGENT: dev is 3 weeks from end-of-support on 1.28.x.
-    Recommend scheduling a dev upgrade to 1.30.5 this week.
+⚠️  URGENT: Both dev clusters are 3 weeks from end-of-support on 1.28.x.
+    Recommend scheduling eastus upgrade wave (dev → staging → prod) this week.
     Staging and prod are healthy — 1.30.5 is available when ready.
 ```
 
@@ -645,12 +716,12 @@ prod      user-pool        1.29.8    ✅ Until Sep 2026       —
 ### E. Jordan (Platform Tech Lead) — Upgrade Window Sizing
 
 ```
-Jordan: "I need to plan the prod upgrade maintenance window. How long should I
+Jordan: "I need to plan the prod-eastus upgrade maintenance window. How long should I
          expect the user-pool upgrade to take?"
 
-Claude: [calls get_upgrade_duration_metrics(cluster="prod", node_pool="user-pool", history_count=4)]
+Claude: [calls get_upgrade_duration_metrics(cluster="prod-eastus", node_pool="user-pool", history_count=4)]
 
-Upgrade duration history — prod / user-pool (last 4 upgrades, sourced from AKS Activity Log)
+Upgrade duration history — prod-eastus / user-pool (last 4 upgrades, sourced from AKS Activity Log)
 
 Date         Version Upgrade    Duration   Nodes   Min/node   Max/node
 2025-11-14   1.27.9 → 1.28.9   1h 04m     12      4m 51s     7m 22s
@@ -671,12 +742,12 @@ Estimated for current planned upgrade (12 nodes, 1.29.8 → 1.30.5):
 ### F. Alex (Platform Engineer) — Tenant Escalation
 
 ```
-Alex: "Casey's team is saying payment-processor pods keep restarting in prod.
+Alex: "Casey's team is saying payment-processor pods keep restarting in prod-eastus.
        Can you pull what's happening?"
 
-Claude: [calls get_pod_health(cluster="prod", namespace="payments", lookback_minutes=60)]
+Claude: [calls get_pod_health(cluster="prod-eastus", namespace="payments", lookback_minutes=60)]
 
-Pod health — prod / payments namespace (last 60 min)
+Pod health — prod-eastus / payments namespace (last 60 min)
 
 🔴 OOMKilled (4 pods)
   payment-processor-7d9f   OOMKilled   container: app   limit: 512Mi   restarts: 11
@@ -698,12 +769,12 @@ limit — if actual usage exceeds 512Mi, the limit should be increased.
 ### G. Alex (Platform Engineer) — PDB Preflight Before Upgrade
 
 ```
-Alex: "We're about to kick off the prod user-pool upgrade through the ADO pipeline.
+Alex: "We're about to kick off the prod-eastus user-pool upgrade through the ADO pipeline.
        Anything that could block drain?"
 
-Claude: [calls check_pdb_upgrade_risk(cluster="prod", node_pool="user-pool", mode="preflight")]
+Claude: [calls check_pdb_upgrade_risk(cluster="prod-eastus", node_pool="user-pool", mode="preflight")]
 
-PDB preflight check — prod / user-pool
+PDB preflight check — prod-eastus / user-pool
 
 ⚠️  2 PDBs may block node drain:
 
@@ -716,7 +787,7 @@ PDB preflight check — prod / user-pool
     Rule: maxUnavailable=0  |  Current pods: 2  |  Disruptable: 0
     ⚠️  maxUnavailable=0 means drain will always be blocked for this workload.
 
-✅ Remaining 47 PDBs across prod have available disruption budget.
+✅ Remaining 47 PDBs across prod-eastus have available disruption budget.
 
 Recommendation: Coordinate with the payments and data-pipeline tenant teams
 before triggering the upgrade. The payments PDB may self-resolve if the tenant
@@ -730,10 +801,10 @@ upgrade window.
 ### H. Sam (On-Call Engineer) — PDB Blocking Live Upgrade
 
 ```
-Sam: "The prod upgrade has been running for 75 minutes. Something is stuck."
+Sam: "The prod-eastus upgrade has been running for 75 minutes. Something is stuck."
 
-Claude: [calls get_upgrade_progress(cluster="prod")]
-        [calls check_pdb_upgrade_risk(cluster="prod", node_pool="user-pool", mode="live")]
+Claude: [calls get_upgrade_progress(cluster="prod-eastus")]
+        [calls check_pdb_upgrade_risk(cluster="prod-eastus", node_pool="user-pool", mode="live")]
 
 🔴 Upgrade running 75 minutes — exceeds expected 60-minute window
 
