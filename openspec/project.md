@@ -22,7 +22,7 @@ Three environments: `dev`, `staging`, `prod`. 100+ tenants across all environmen
 
 | Layer | Technology | Notes |
 |---|---|---|
-| Language | Python 3.11+ | Matches existing platform tooling |
+| Language | Python 3.14+ | Matches existing platform tooling |
 | MCP Framework | `mcp[cli]` (FastMCP) | Official Anthropic SDK; simplest tool definition pattern |
 | Package Manager | `uv` | Fast, lockfile-based; consistent with platform Python tooling |
 | Kubernetes Client | `kubernetes` (official Python client) | Core, Metrics, Events, and Policy APIs |
@@ -113,15 +113,50 @@ Node-level states used in `get_upgrade_progress`:
 A node is `stalled` when the total pool upgrade has exceeded 60 minutes (configurable in `config.py`) and the node is not yet `NodeReady` with no active PDB block.
 
 ### Testing Strategy
-- Unit tests per tool module in `tests/test_<tool>.py`
-- Mock Kubernetes and Azure API clients — no live cluster calls in tests
-- Test all failure modes: Metrics API unavailable, partial AKS API response, PDB blocking scenarios
-- Run tests with `uv run pytest`
+
+This project follows **Test-Driven Development (TDD)**. Tests are written before implementation code. No implementation is considered complete unless all relevant tests pass.
+
+#### TDD Cycle
+
+1. **Red** — Write a failing test that specifies the desired behavior. The test must fail for the right reason (not a syntax error).
+2. **Green** — Write the minimum implementation code required to make the test pass. Do not over-engineer.
+3. **Refactor** — Clean up the implementation and tests. Run the suite after every change.
+
+#### Rules
+
+- **Tests first, always** — do not write implementation code for a new behavior until a failing test exists for it
+- **No implementation without a test** — if a behavior is not covered by a test, it is not considered implemented
+- **Tests live alongside the code they cover** — one test file per tool module (`tests/test_<tool>.py`) and one per client module (`tests/test_clients/<client>.py`)
+- **Mock all external I/O** — Kubernetes and Azure API clients must be mocked in every test; no live cluster calls in tests
+- **Test the contract, not the implementation** — assert on Pydantic output models and error structures, not internal helper functions
+- **Failure modes are first-class** — each tool must have explicit tests for: data source unavailable (e.g., Metrics API down), partial API response, invalid parameters, and all error states defined in the PRD
+
+#### Test Coverage Requirements
+
+Every tool module must have tests covering:
+
+- Happy path with realistic fixture data
+- Graceful degradation when a backing API is unavailable
+- Pressure/state threshold boundaries (e.g., exactly at `warning` vs. `critical` cutoffs)
+- `cluster="all"` parallel fan-out behavior
+- Structured error output format (not raw exceptions)
+
+#### Running Tests
+
+```bash
+uv run pytest              # full suite
+uv run pytest tests/test_node_pools.py  # single module
+uv run pytest --tb=short   # compact failure output
+```
 
 ### Git Workflow
+
+**AI agents must not perform any git operations.** This includes — but is not limited to — creating branches, committing, pushing, pulling, rebasing, merging, tagging, or interacting with any remote. All git operations are the exclusive responsibility of the human engineer.
+
 - Branch from `main`; PR required for all changes
 - Commit messages: conventional commits style (`feat:`, `fix:`, `refactor:`, `test:`, `chore:`)
 - OpenSpec proposals required before implementing new tools or breaking changes (see `openspec/AGENTS.md`)
+- The engineer creates the branch before starting work and pushes when ready — the agent only reads and writes files
 
 ---
 
