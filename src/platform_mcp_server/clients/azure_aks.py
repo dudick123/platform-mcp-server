@@ -6,8 +6,19 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
+# Note 1: DefaultAzureCredential implements a credential chain: it tries, in order,
+# Note 2: environment variables (AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID),
+# Note 3: then workload identity, then managed identity, then the Azure CLI token cache,
+# Note 4: then Visual Studio Code, then an interactive browser login. This means the same
+# Note 5: code works in CI (env vars), on Azure VMs (managed identity), and on developer
+# Note 6: laptops (az CLI) without any conditional logic in the application itself.
 from azure.identity import DefaultAzureCredential
+# Note 7: ContainerServiceClient talks to the Microsoft.ContainerService management plane.
+# Note 8: It is used for cluster CRUD operations, node pool management, and upgrade profiles.
 from azure.mgmt.containerservice import ContainerServiceClient
+# Note 9: MonitorManagementClient talks to the Azure Monitor management plane. It provides
+# Note 10: access to Activity Logs (audit trail of ARM operations) which is a separate API
+# Note 11: surface from the container service plane -- hence a second client is required.
 from azure.mgmt.monitor import MonitorManagementClient
 
 from platform_mcp_server.config import ClusterConfig
@@ -20,11 +31,20 @@ class AzureAksClient:
 
     def __init__(self, cluster_config: ClusterConfig) -> None:
         self._config = cluster_config
+        # Note 12: The three private attributes are initialised to None here rather than to
+        # Note 13: real SDK objects. This is the lazy-initialisation (or "lazy singleton")
+        # Note 14: pattern: the actual Azure SDK clients are not created until the first method
+        # Note 15: call that needs them. This avoids authenticating and opening network
+        # Note 16: connections at import time, which would slow startup and fail in environments
+        # Note 17: where Azure credentials are not yet available (e.g. during unit tests).
         self._container_client: ContainerServiceClient | None = None
         self._monitor_client: MonitorManagementClient | None = None
         self._credential: DefaultAzureCredential | None = None
 
     def _get_credential(self) -> DefaultAzureCredential:
+        # Note 18: The "if None, create and cache" pattern ensures that DefaultAzureCredential
+        # Note 19: is instantiated exactly once per AzureAksClient instance. Reusing the same
+        # Note 20: credential object allows the SDK to cache and refresh tokens internally.
         if self._credential is None:
             self._credential = DefaultAzureCredential()
         return self._credential
@@ -52,6 +72,10 @@ class AzureAksClient:
         """
         client = self._get_container_client()
         try:
+            # Note 21: client.managed_clusters.get() maps directly to the Azure Resource Manager
+            # Note 22: REST call GET /subscriptions/{sub}/resourceGroups/{rg}/providers/
+            # Note 23: Microsoft.ContainerService/managedClusters/{name}. The Python SDK
+            # Note 24: deserialises the JSON response into a ManagedCluster model object.
             cluster = client.managed_clusters.get(
                 self._config.resource_group,
                 self._config.aks_cluster_name,
@@ -64,6 +88,9 @@ class AzureAksClient:
             raise
 
         node_pools = []
+        # Note 25: agent_pool_profiles is the list of node pool configurations embedded in the
+        # Note 26: cluster object. The "or []" guard handles the case where the field is None,
+        # Note 27: which can happen on partially-provisioned clusters, avoiding a TypeError.
         for pool in cluster.agent_pool_profiles or []:
             node_pools.append(
                 {
@@ -72,9 +99,18 @@ class AzureAksClient:
                     "count": pool.count,
                     "min_count": pool.min_count,
                     "max_count": pool.max_count,
+                    # Note 28: current_orchestrator_version holds the version the node pool is
+                    # Note 29: actually running right now. orchestrator_version holds the desired
+                    # Note 30: (target) version. During an in-flight upgrade the two differ;
+                    # Note 31: after upgrade completes they converge. The "or" fallback handles
+                    # Note 32: clusters where only orchestrator_version is populated (older API).
                     "current_version": pool.current_orchestrator_version or pool.orchestrator_version,
                     "target_version": pool.orchestrator_version,
                     "provisioning_state": pool.provisioning_state,
+                    # Note 33: power_state.code is either "Running" or "Stopped". AKS supports
+                    # Note 34: stopping node pools to save compute costs outside business hours.
+                    # Note 35: The conditional guards against power_state being None on clusters
+                    # Note 36: that predate the power state feature in the AKS API.
                     "power_state": pool.power_state.code if pool.power_state else None,
                     "os_type": pool.os_type,
                     "mode": pool.mode,
@@ -129,6 +165,11 @@ class AzureAksClient:
         """
         client = self._get_container_client()
         try:
+            # Note 37: get_upgrade_profile() is a dedicated ARM endpoint separate from the main
+            # Note 38: cluster GET. Azure computes available upgrades dynamically -- they depend
+            # Note 39: on the current version, regional rollout status, and Microsoft's support
+            # Note 40: policy -- so caching them inside the cluster object would go stale quickly.
+            # Note 41: Making a separate call ensures the LLM always sees current upgrade options.
             profile = client.managed_clusters.get_upgrade_profile(
                 self._config.resource_group,
                 self._config.aks_cluster_name,
@@ -183,6 +224,12 @@ class AzureAksClient:
         )
         now = datetime.now(tz=UTC)
         ninety_days_ago = now - timedelta(days=90)
+        # Note 42: The filter string uses OData query syntax, which is the query language for
+        # Note 43: Azure Resource Manager list operations. eventTimestamp fields must be in
+        # Note 44: ISO 8601 format (e.g. "2025-01-01T00:00:00+00:00"). The operationName filter
+        # Note 45: restricts results to cluster write operations, which is the ARM operation
+        # Note 46: emitted when AKS starts or completes an upgrade. Without this filter the
+        # Note 47: 90-day window could return thousands of unrelated log entries.
         filter_str = (
             f"eventTimestamp ge '{ninety_days_ago.isoformat()}' "
             f"and eventTimestamp le '{now.isoformat()}' "
@@ -201,11 +248,20 @@ class AzureAksClient:
 
         records: list[dict[str, Any]] = []
         for entry in logs:
+            # Note 48: The Activity Log API returns a lazy iterator backed by paginated HTTP
+            # Note 49: calls. Checking len(records) >= count before processing each entry and
+            # Note 50: breaking early stops further page fetches once enough records have been
+            # Note 51: collected, avoiding unnecessary network round-trips for data that will
+            # Note 52: not be used. The Azure SDK does not support server-side $top on this API.
             if len(records) >= count:
                 break
             if entry.status and entry.status.value == "Succeeded":
                 duration_seconds = None
                 if entry.event_timestamp and entry.submission_timestamp:
+                    # Note 53: submission_timestamp is when ARM accepted and began processing the
+                    # Note 54: operation (i.e. when the upgrade started). event_timestamp is when
+                    # Note 55: the operation reached its terminal state (succeeded or failed).
+                    # Note 56: Subtracting the two gives the wall-clock duration of the upgrade.
                     delta = entry.event_timestamp - entry.submission_timestamp
                     duration_seconds = delta.total_seconds()
 

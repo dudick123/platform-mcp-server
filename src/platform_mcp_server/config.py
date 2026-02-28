@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+# Note 1: `Literal` from typing lets you declare a type as exactly one of a fixed set of string
+# Note 2: values. This acts like a closed enum without needing a full Enum class -- the type
+# Note 3: checker will reject any string that is not listed, giving you compile-time safety.
 from typing import Literal
 
+# Note 4: `Literal[...]` defines ClusterID as a union of the six exact strings shown below.
+# Note 5: Functions that accept a ClusterID parameter signal to callers that only these six
+# Note 6: strings are meaningful -- anything else is a programming error, not a runtime condition.
 ClusterID = Literal[
     "dev-eastus",
     "dev-westus2",
@@ -15,6 +21,9 @@ ClusterID = Literal[
     "prod-westus2",
 ]
 
+# Note 7: ALL_CLUSTER_IDS duplicates the Literal values as a plain list so runtime code can
+# Note 8: iterate, validate, or display them without relying on typing internals (which are
+# Note 9: not designed for runtime introspection in older Python versions).
 ALL_CLUSTER_IDS: list[str] = [
     "dev-eastus",
     "dev-westus2",
@@ -25,10 +34,17 @@ ALL_CLUSTER_IDS: list[str] = [
 ]
 
 
+# Note 10: `@dataclass(frozen=True)` generates __init__, __repr__, and __eq__ automatically,
+# Note 11: but also makes every field read-only after construction by overriding __setattr__
+# Note 12: and __delattr__ to raise FrozenInstanceError. This prevents accidental mutation of
+# Note 13: configuration objects that are shared across multiple call sites.
 @dataclass(frozen=True)
 class ClusterConfig:
     """Configuration for a single AKS cluster."""
 
+    # Note 14: The composite cluster_id (e.g., "prod-eastus") encodes both environment and region
+    # Note 15: in one string. A single field is far more convenient as a dict key, log tag, or URL
+    # Note 16: segment than two separate fields that callers would have to join themselves.
     cluster_id: str
     environment: str
     region: str
@@ -38,11 +54,22 @@ class ClusterConfig:
     kubeconfig_context: str
 
 
+# Note 17: ThresholdConfig also uses frozen=True so that a single shared instance returned by
+# Note 18: get_thresholds() cannot be silently mutated by any consumer -- every caller sees the
+# Note 19: same values that were read from the environment at instantiation time.
 @dataclass(frozen=True)
 class ThresholdConfig:
     """Operational thresholds with environment variable overrides."""
 
+    # Note 20: `field(default_factory=lambda: ...)` defers evaluation of the default value until
+    # Note 21: the dataclass is instantiated, NOT when the module is imported. This matters because
+    # Note 22: environment variables set after import time (e.g., in tests or Docker entrypoints)
+    # Note 23: are picked up correctly. A bare `default=float(os.environ.get(...))` would bake in
+    # Note 24: whatever the env var was at import time and ignore later changes.
     cpu_warning: float = field(default_factory=lambda: float(os.environ.get("PRESSURE_CPU_WARNING", "75")))
+    # Note 25: `os.environ.get(key, default)` returns the default string when the variable is
+    # Note 26: absent, unlike `os.environ[key]` which raises KeyError. Wrapping with float() / int()
+    # Note 27: converts the string to the correct numeric type for threshold comparisons.
     cpu_critical: float = field(default_factory=lambda: float(os.environ.get("PRESSURE_CPU_CRITICAL", "90")))
     memory_warning: float = field(default_factory=lambda: float(os.environ.get("PRESSURE_MEMORY_WARNING", "80")))
     memory_critical: float = field(default_factory=lambda: float(os.environ.get("PRESSURE_MEMORY_CRITICAL", "95")))
@@ -55,11 +82,17 @@ class ThresholdConfig:
 
 # Cluster configuration mapping — single source of truth for cluster resolution.
 # Values are placeholders; engineers override via environment or config file per deployment.
+# Note 28: CLUSTER_MAP is the canonical registry of every cluster this server knows about.
+# Note 29: Centralising all six entries here means adding a new cluster is a single-file change
+# Note 30: with no logic to update -- resolve_cluster and validate_cluster_config work automatically.
 CLUSTER_MAP: dict[str, ClusterConfig] = {
     "dev-eastus": ClusterConfig(
         cluster_id="dev-eastus",
         environment="dev",
         region="eastus",
+        # Note 31: Angle-bracket placeholders like "<dev-subscription-id>" are a deliberate sentinel
+        # Note 32: value. They are visually obvious in logs and are easy to detect programmatically
+        # Note 33: (starts with "<", ends with ">") without needing a separate "unset" sentinel type.
         subscription_id="<dev-subscription-id>",
         resource_group="rg-dev-eastus",
         aks_cluster_name="aks-dev-eastus",
@@ -125,6 +158,9 @@ def resolve_cluster(cluster_id: str) -> ClusterConfig:
     Raises:
         ValueError: If the cluster_id is not found in CLUSTER_MAP.
     """
+    # Note 34: Checking membership before accessing avoids a raw KeyError, which has a less
+    # Note 35: helpful message. Raising ValueError with a list of valid choices helps callers
+    # Note 36: self-diagnose typos without reading source code.
     if cluster_id not in CLUSTER_MAP:
         valid = ", ".join(sorted(CLUSTER_MAP.keys()))
         msg = f"Unknown cluster '{cluster_id}'. Valid clusters: {valid}"
@@ -137,8 +173,15 @@ def validate_cluster_config() -> None:
 
     Raises RuntimeError if placeholder subscription IDs are detected.
     """
+    # Note 37: This function embodies the "fail fast" philosophy: detect misconfiguration at
+    # Note 38: process startup rather than at the moment a production API call fails with a
+    # Note 39: cryptic Azure authentication error. Raising RuntimeError here aborts the server
+    # Note 40: before it can serve any traffic with a bad config.
     placeholder_clusters = []
     for cluster_id, config in CLUSTER_MAP.items():
+        # Note 41: The angle-bracket check mirrors the placeholder format used in CLUSTER_MAP above.
+        # Note 42: Detecting both the opening "<" and closing ">" guards against partial edits where
+        # Note 43: someone replaced one bracket but not both, which would still be an invalid ID.
         if config.subscription_id.startswith("<") and config.subscription_id.endswith(">"):
             placeholder_clusters.append(cluster_id)
     if placeholder_clusters:
@@ -152,4 +195,8 @@ def validate_cluster_config() -> None:
 
 def get_thresholds() -> ThresholdConfig:
     """Return threshold configuration with environment variable overrides applied."""
+    # Note 44: Constructing ThresholdConfig() here (rather than at module level) means each call
+    # Note 45: re-reads the environment. This is intentional: tests can patch os.environ between
+    # Note 46: calls without reloading the module, and the returned object is frozen so it cannot
+    # Note 47: be mutated after the read -- every caller gets a consistent, immutable snapshot.
     return ThresholdConfig()
