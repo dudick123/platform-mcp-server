@@ -173,6 +173,7 @@ class AzureAksClient:
 
         Returns a list of upgrade records with date, duration, and version info.
         """
+        count = min(count, 50)
         client = self._get_monitor_client()
         resource_id = (
             f"/subscriptions/{self._config.subscription_id}"

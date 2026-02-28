@@ -14,6 +14,7 @@ from platform_mcp_server.config import (
     ThresholdConfig,
     get_thresholds,
     resolve_cluster,
+    validate_cluster_config,
 )
 
 
@@ -114,3 +115,26 @@ class TestThresholdConfig:
         thresholds = get_thresholds()
         with pytest.raises(AttributeError):
             thresholds.cpu_critical = 50.0  # type: ignore[misc]
+
+
+class TestValidateClusterConfig:
+    """Tests for startup config validation."""
+
+    def test_detects_placeholder_subscription_ids(self) -> None:
+        with pytest.raises(RuntimeError, match="Placeholder subscription IDs"):
+            validate_cluster_config()
+
+    def test_accepts_real_subscription_ids(self) -> None:
+        real_configs = {}
+        for cid, cfg in CLUSTER_MAP.items():
+            real_configs[cid] = ClusterConfig(
+                cluster_id=cfg.cluster_id,
+                environment=cfg.environment,
+                region=cfg.region,
+                subscription_id="12345678-1234-1234-1234-123456789abc",
+                resource_group=cfg.resource_group,
+                aks_cluster_name=cfg.aks_cluster_name,
+                kubeconfig_context=cfg.kubeconfig_context,
+            )
+        with patch.dict("platform_mcp_server.config.CLUSTER_MAP", real_configs):
+            validate_cluster_config()  # Should not raise

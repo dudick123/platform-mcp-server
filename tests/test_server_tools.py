@@ -151,7 +151,7 @@ class TestCheckNodePoolPressure:
                 new_callable=AsyncMock,
                 side_effect=ValueError("test error"),
             ),
-            pytest.raises(ValueError, match="test error"),
+            pytest.raises(RuntimeError, match="test error"),
         ):
             await check_node_pool_pressure("prod-eastus")
 

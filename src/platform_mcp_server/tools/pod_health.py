@@ -13,6 +13,7 @@ from platform_mcp_server.clients.k8s_core import K8sCoreClient
 from platform_mcp_server.clients.k8s_events import K8sEventsClient
 from platform_mcp_server.config import ALL_CLUSTER_IDS, resolve_cluster
 from platform_mcp_server.models import PodDetail, PodHealthOutput, ToolError
+from platform_mcp_server.validation import validate_namespace
 
 log = structlog.get_logger()
 
@@ -90,6 +91,7 @@ async def get_pod_health_handler(
     lookback_minutes: int = 30,
 ) -> PodHealthOutput:
     """Core handler for get_pod_health on a single cluster."""
+    validate_namespace(namespace)
     config = resolve_cluster(cluster_id)
     core_client = K8sCoreClient(config)
     events_client = K8sEventsClient(config)
@@ -185,4 +187,11 @@ async def get_pod_health_all(
 ) -> list[PodHealthOutput]:
     """Fan-out get_pod_health to all clusters concurrently."""
     tasks = [get_pod_health_handler(cid, namespace, status_filter, lookback_minutes) for cid in ALL_CLUSTER_IDS]
-    return list(await asyncio.gather(*tasks, return_exceptions=False))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    outputs: list[PodHealthOutput] = []
+    for cid, result in zip(ALL_CLUSTER_IDS, results, strict=True):
+        if isinstance(result, BaseException):
+            log.error("fan_out_cluster_failed", tool="get_pod_health", cluster=cid, error=str(result))
+        else:
+            outputs.append(result)
+    return outputs

@@ -17,6 +17,7 @@ from platform_mcp_server.models import (
     ToolError,
     UpgradeDurationOutput,
 )
+from platform_mcp_server.validation import validate_node_pool
 
 log = structlog.get_logger()
 
@@ -36,6 +37,7 @@ async def get_upgrade_metrics_handler(
     history_count: int = 5,
 ) -> UpgradeDurationOutput:
     """Core handler for get_upgrade_duration_metrics on a single cluster."""
+    validate_node_pool(node_pool)
     config = resolve_cluster(cluster_id)
     events_client = K8sEventsClient(config)
     aks_client = AzureAksClient(config)
@@ -69,17 +71,20 @@ async def get_upgrade_metrics_handler(
     current_run: CurrentRunMetrics | None = None
     if completed_durations:
         durations = list(completed_durations.values())
-        total_elapsed = sum(durations)
-        mean_per_node = total_elapsed / len(durations)
+        mean_per_node = sum(durations) / len(durations)
         nodes_in_progress = len(upgrade_times) - len(completed_durations)
         estimated_remaining = mean_per_node * nodes_in_progress if nodes_in_progress > 0 else None
+
+        # Wall-clock elapsed from earliest NodeUpgrade event to now
+        earliest_start = min(upgrade_times.values())
+        wall_clock_elapsed = (datetime.now(tz=UTC) - earliest_start).total_seconds()
 
         sorted_nodes = sorted(completed_durations.items(), key=lambda x: x[1])
         fastest = sorted_nodes[0][0] if sorted_nodes else None
         slowest = sorted_nodes[-1][0] if sorted_nodes else None
 
         current_run = CurrentRunMetrics(
-            elapsed_seconds=total_elapsed,
+            elapsed_seconds=wall_clock_elapsed,
             estimated_remaining_seconds=estimated_remaining,
             nodes_completed=len(completed_durations),
             nodes_total=len(upgrade_times),
@@ -183,4 +188,11 @@ async def get_upgrade_metrics_all(
 ) -> list[UpgradeDurationOutput]:
     """Fan-out get_upgrade_duration_metrics to all clusters concurrently."""
     tasks = [get_upgrade_metrics_handler(cid, node_pool, history_count) for cid in ALL_CLUSTER_IDS]
-    return list(await asyncio.gather(*tasks, return_exceptions=False))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    outputs: list[UpgradeDurationOutput] = []
+    for cid, result in zip(ALL_CLUSTER_IDS, results, strict=True):
+        if isinstance(result, BaseException):
+            log.error("fan_out_cluster_failed", tool="get_upgrade_duration_metrics", cluster=cid, error=str(result))
+        else:
+            outputs.append(result)
+    return outputs

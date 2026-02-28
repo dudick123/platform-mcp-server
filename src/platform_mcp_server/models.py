@@ -35,10 +35,12 @@ class ToolError(BaseModel):
 _IP_PATTERN = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
 _SUBSCRIPTION_PATTERN = re.compile(r"/subscriptions/[a-f0-9-]+", re.IGNORECASE)
 _RESOURCE_GROUP_PATTERN = re.compile(r"/resourceGroups/[^/]+", re.IGNORECASE)
+_FQDN_PATTERN = re.compile(r"\b[\w.-]+\.azmk8s\.io\b", re.IGNORECASE)
+_AZURE_HOST_PATTERN = re.compile(r"\b[\w.-]+\.(vault\.azure\.net|blob\.core\.windows\.net)\b", re.IGNORECASE)
 
 
 def scrub_sensitive_values(text: str) -> str:
-    """Remove internal IPs, subscription IDs, and resource group names from text.
+    """Remove internal IPs, subscription IDs, resource group names, and Azure FQDNs from text.
 
     Node names (e.g., aks-userpool-00000001) are preserved.
     """
@@ -47,6 +49,8 @@ def scrub_sensitive_values(text: str) -> str:
     result = _IP_PATTERN.sub("[REDACTED_IP]", text)
     result = _RESOURCE_GROUP_PATTERN.sub("/resourceGroups/[REDACTED]", result)
     result = _SUBSCRIPTION_PATTERN.sub("/subscriptions/[REDACTED]", result)
+    result = _FQDN_PATTERN.sub("[REDACTED_FQDN]", result)
+    result = _AZURE_HOST_PATTERN.sub("[REDACTED_HOST]", result)
     return result
 
 
@@ -104,7 +108,7 @@ class PodHealthInput(BaseModel):
     cluster: VALID_CLUSTERS
     namespace: str | None = None
     status_filter: Literal["pending", "failed", "all"] = "all"
-    lookback_minutes: int = 30
+    lookback_minutes: int = Field(default=30, ge=1, le=1440)
 
 
 class PodHealthOutput(BaseModel):
@@ -232,7 +236,7 @@ class UpgradeDurationInput(BaseModel):
 
     cluster: VALID_CLUSTERS
     node_pool: str
-    history_count: int = 5
+    history_count: int = Field(default=5, ge=1, le=50)
 
 
 class UpgradeDurationOutput(BaseModel):

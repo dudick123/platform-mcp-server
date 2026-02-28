@@ -99,12 +99,21 @@ async def check_node_pool_pressure_handler(cluster_id: str) -> NodePoolPressureO
 
     # Group nodes by pool
     pools: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    node_to_pool: dict[str, str] = {}
     for node in nodes:
         pool_name = node["pool"] or "unknown"
         pools[pool_name].append(node)
+        node_to_pool[node["name"]] = pool_name
 
-    # Count pending pods (unscheduled)
-    pending_count = len(pods)
+    # Count pending pods per pool (by node assignment) and unassigned
+    pending_per_pool: dict[str, int] = defaultdict(int)
+    unassigned_pending = 0
+    for pod in pods:
+        pod_node = pod.get("node_name")
+        if pod_node and pod_node in node_to_pool:
+            pending_per_pool[node_to_pool[pod_node]] += 1
+        else:
+            unassigned_pending += 1
 
     # Build results per pool
     pool_results: list[NodePoolResult] = []
@@ -130,14 +139,15 @@ async def check_node_pool_pressure_handler(cluster_id: str) -> NodePoolPressureO
         cpu_pct = (total_cpu_usage / total_cpu_alloc * 100) if has_metrics and total_cpu_alloc > 0 else None
         mem_pct = (total_mem_usage / total_mem_alloc * 100) if has_metrics and total_mem_alloc > 0 else None
 
-        pressure = _classify_pressure(cpu_pct, mem_pct, pending_count, thresholds)
+        pool_pending = pending_per_pool.get(pool_name, 0) + unassigned_pending
+        pressure = _classify_pressure(cpu_pct, mem_pct, pool_pending, thresholds)
 
         pool_results.append(
             NodePoolResult(
                 pool_name=pool_name,
                 cpu_requests_percent=round(cpu_pct, 1) if cpu_pct is not None else None,
                 memory_requests_percent=round(mem_pct, 1) if mem_pct is not None else None,
-                pending_pods=pending_count,
+                pending_pods=pool_pending,
                 ready_nodes=ready_count,
                 max_nodes=None,  # Can be enriched from AKS API later
                 pressure_level=pressure,
@@ -163,4 +173,11 @@ async def check_node_pool_pressure_handler(cluster_id: str) -> NodePoolPressureO
 async def check_node_pool_pressure_all() -> list[NodePoolPressureOutput]:
     """Fan-out check_node_pool_pressure to all clusters concurrently."""
     tasks = [check_node_pool_pressure_handler(cid) for cid in ALL_CLUSTER_IDS]
-    return list(await asyncio.gather(*tasks, return_exceptions=False))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    outputs: list[NodePoolPressureOutput] = []
+    for cid, result in zip(ALL_CLUSTER_IDS, results, strict=True):
+        if isinstance(result, BaseException):
+            log.error("fan_out_cluster_failed", tool="check_node_pool_pressure", cluster=cid, error=str(result))
+        else:
+            outputs.append(result)
+    return outputs

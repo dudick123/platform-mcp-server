@@ -6,8 +6,8 @@ from typing import Any
 
 import structlog
 from kubernetes import client as k8s_client
-from kubernetes import config as k8s_config
 
+from platform_mcp_server.clients import load_k8s_api_client
 from platform_mcp_server.config import ClusterConfig
 
 log = structlog.get_logger()
@@ -26,7 +26,7 @@ class K8sCoreClient:
 
     def _get_api(self) -> k8s_client.CoreV1Api:
         if self._api is None:
-            api_client = _load_k8s_client(self._cluster_config.kubeconfig_context)
+            api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
             self._api = k8s_client.CoreV1Api(api_client)
         return self._api
 
@@ -144,10 +144,3 @@ class K8sCoreClient:
                 }
             )
         return results
-
-
-def _load_k8s_client(context: str) -> k8s_client.ApiClient:
-    """Load a Kubernetes API client for the given kubeconfig context."""
-    k8s_config.load_kube_config(context=context)
-    configuration = k8s_client.Configuration.get_default_copy()
-    return k8s_client.ApiClient(configuration)

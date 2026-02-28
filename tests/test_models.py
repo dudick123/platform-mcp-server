@@ -305,3 +305,57 @@ class TestScrubSensitiveValues:
     def test_scrub_no_sensitive_data(self) -> None:
         text = "All 3 pods are healthy"
         assert scrub_sensitive_values(text) == text
+
+    def test_scrub_aks_fqdn(self) -> None:
+        text = "Connected to aks-prod.eastus.azmk8s.io"
+        scrubbed = scrub_sensitive_values(text)
+        assert "azmk8s.io" not in scrubbed
+        assert "[REDACTED_FQDN]" in scrubbed
+
+    def test_scrub_vault_hostname(self) -> None:
+        text = "Access denied for myvault.vault.azure.net"
+        scrubbed = scrub_sensitive_values(text)
+        assert "myvault.vault.azure.net" not in scrubbed
+        assert "[REDACTED_HOST]" in scrubbed
+
+    def test_scrub_blob_hostname(self) -> None:
+        text = "Storage at myaccount.blob.core.windows.net"
+        scrubbed = scrub_sensitive_values(text)
+        assert "myaccount.blob.core.windows.net" not in scrubbed
+        assert "[REDACTED_HOST]" in scrubbed
+
+
+class TestInputValidationBounds:
+    """Tests for input model field constraints."""
+
+    def test_lookback_minutes_default(self) -> None:
+        inp = PodHealthInput(cluster="prod-eastus")
+        assert inp.lookback_minutes == 30
+
+    def test_lookback_minutes_valid(self) -> None:
+        inp = PodHealthInput(cluster="prod-eastus", lookback_minutes=60)
+        assert inp.lookback_minutes == 60
+
+    def test_lookback_minutes_too_high(self) -> None:
+        with pytest.raises(ValidationError):
+            PodHealthInput(cluster="prod-eastus", lookback_minutes=1441)
+
+    def test_lookback_minutes_too_low(self) -> None:
+        with pytest.raises(ValidationError):
+            PodHealthInput(cluster="prod-eastus", lookback_minutes=0)
+
+    def test_history_count_default(self) -> None:
+        inp = UpgradeDurationInput(cluster="prod-eastus", node_pool="userpool")
+        assert inp.history_count == 5
+
+    def test_history_count_valid(self) -> None:
+        inp = UpgradeDurationInput(cluster="prod-eastus", node_pool="userpool", history_count=50)
+        assert inp.history_count == 50
+
+    def test_history_count_too_high(self) -> None:
+        with pytest.raises(ValidationError):
+            UpgradeDurationInput(cluster="prod-eastus", node_pool="userpool", history_count=51)
+
+    def test_history_count_too_low(self) -> None:
+        with pytest.raises(ValidationError):
+            UpgradeDurationInput(cluster="prod-eastus", node_pool="userpool", history_count=0)

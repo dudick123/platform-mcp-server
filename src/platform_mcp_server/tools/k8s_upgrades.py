@@ -25,10 +25,10 @@ async def get_upgrade_status_handler(cluster_id: str) -> UpgradeStatusOutput:
     cluster_info: dict[str, Any] | None = None
     try:
         cluster_info = await aks_client.get_cluster_info()
-    except Exception as e:
+    except Exception:
         errors.append(
             ToolError(
-                error=f"Failed to get cluster info: {type(e).__name__}",
+                error="Failed to get cluster info",
                 source="aks-api",
                 cluster=cluster_id,
                 partial_data=True,
@@ -65,8 +65,10 @@ async def get_upgrade_status_handler(cluster_id: str) -> UpgradeStatusOutput:
     node_pools: list[NodePoolVersionInfo] = []
     upgrade_active = False
     for pool in cluster_info.get("node_pools", []):
+        current_ver = pool.get("current_version")
+        target_ver = pool.get("target_version")
         is_upgrading = pool.get("provisioning_state") == "Upgrading" or (
-            pool.get("current_version") != pool.get("target_version")
+            current_ver is not None and target_ver is not None and current_ver != target_ver
         )
         if is_upgrading:
             upgrade_active = True
@@ -108,4 +110,11 @@ async def get_upgrade_status_handler(cluster_id: str) -> UpgradeStatusOutput:
 async def get_upgrade_status_all() -> list[UpgradeStatusOutput]:
     """Fan-out get_kubernetes_upgrade_status to all clusters concurrently."""
     tasks = [get_upgrade_status_handler(cid) for cid in ALL_CLUSTER_IDS]
-    return list(await asyncio.gather(*tasks, return_exceptions=False))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    outputs: list[UpgradeStatusOutput] = []
+    for cid, result in zip(ALL_CLUSTER_IDS, results, strict=True):
+        if isinstance(result, BaseException):
+            log.error("fan_out_cluster_failed", tool="get_kubernetes_upgrade_status", cluster=cid, error=str(result))
+        else:
+            outputs.append(result)
+    return outputs

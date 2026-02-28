@@ -132,6 +132,24 @@ def resolve_cluster(cluster_id: str) -> ClusterConfig:
     return CLUSTER_MAP[cluster_id]
 
 
+def validate_cluster_config() -> None:
+    """Validate all cluster configurations at startup.
+
+    Raises RuntimeError if placeholder subscription IDs are detected.
+    """
+    placeholder_clusters = []
+    for cluster_id, config in CLUSTER_MAP.items():
+        if config.subscription_id.startswith("<") and config.subscription_id.endswith(">"):
+            placeholder_clusters.append(cluster_id)
+    if placeholder_clusters:
+        clusters = ", ".join(placeholder_clusters)
+        msg = (
+            f"Placeholder subscription IDs detected for clusters: {clusters}. "
+            f"Set real subscription IDs before running in production."
+        )
+        raise RuntimeError(msg)
+
+
 def get_thresholds() -> ThresholdConfig:
     """Return threshold configuration with environment variable overrides applied."""
     return ThresholdConfig()

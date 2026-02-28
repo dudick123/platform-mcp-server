@@ -12,6 +12,7 @@ from platform_mcp_server.clients.k8s_core import K8sCoreClient
 from platform_mcp_server.clients.k8s_policy import K8sPolicyClient
 from platform_mcp_server.config import ALL_CLUSTER_IDS, resolve_cluster
 from platform_mcp_server.models import PdbCheckOutput, PdbRisk, ToolError
+from platform_mcp_server.validation import validate_mode, validate_node_pool
 
 log = structlog.get_logger()
 
@@ -22,6 +23,8 @@ async def check_pdb_risk_handler(
     mode: str = "preflight",
 ) -> PdbCheckOutput:
     """Core handler for check_pdb_upgrade_risk on a single cluster."""
+    validate_mode(mode)
+    validate_node_pool(node_pool)
     config = resolve_cluster(cluster_id)
     policy_client = K8sPolicyClient(config)
     core_client = K8sCoreClient(config)
@@ -93,7 +96,14 @@ async def check_pdb_risk_all(
 ) -> list[PdbCheckOutput]:
     """Fan-out check_pdb_upgrade_risk to all clusters concurrently."""
     tasks = [check_pdb_risk_handler(cid, node_pool, mode) for cid in ALL_CLUSTER_IDS]
-    return list(await asyncio.gather(*tasks, return_exceptions=False))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    outputs: list[PdbCheckOutput] = []
+    for cid, result in zip(ALL_CLUSTER_IDS, results, strict=True):
+        if isinstance(result, BaseException):
+            log.error("fan_out_cluster_failed", tool="check_pdb_upgrade_risk", cluster=cid, error=str(result))
+        else:
+            outputs.append(result)
+    return outputs
 
 
 def _workload_from_selector(selector: dict[str, Any]) -> str:

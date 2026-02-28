@@ -14,6 +14,7 @@ from platform_mcp_server.clients.k8s_events import K8sEventsClient
 from platform_mcp_server.clients.k8s_policy import K8sPolicyClient
 from platform_mcp_server.config import ALL_CLUSTER_IDS, get_thresholds, resolve_cluster
 from platform_mcp_server.models import NodeUpgradeState, ToolError, UpgradeProgressOutput
+from platform_mcp_server.validation import validate_node_pool
 
 log = structlog.get_logger()
 
@@ -51,26 +52,23 @@ def _classify_node_state(
 
     # Upgrading: has NodeUpgrade event but not yet NodeReady
     if has_upgrade_event and not has_ready_event:
+        # Check if stalled first
+        if upgrade_start:
+            elapsed_minutes = (datetime.now(tz=UTC) - upgrade_start).total_seconds() / 60
+            if elapsed_minutes > thresholds_minutes:
+                if pdb_blockers and unschedulable:
+                    return "pdb_blocked"
+                return "stalled"
+        # PDB blocked: actively upgrading, cordoned, and PDB blocking drain
+        if unschedulable and pdb_blockers:
+            return "pdb_blocked"
         return "upgrading"
 
-    # PDB blocked: cordoned with PDB blocking
-    if unschedulable and pdb_blockers:
-        return "pdb_blocked"
-
     # Cordoned: unschedulable but no NodeUpgrade event yet
-    if unschedulable and not has_upgrade_event:
+    if unschedulable:
         return "cordoned"
 
-    # Stalled: upgrade exceeded threshold, node not ready, no PDB block
-    if upgrade_start:
-        elapsed_minutes = (datetime.now(tz=UTC) - upgrade_start).total_seconds() / 60
-        if elapsed_minutes > thresholds_minutes and not has_ready_event:
-            return "stalled"
-
     # Pending: old version, not yet cordoned
-    if version != target_version:
-        return "pending"
-
     return "pending"
 
 
@@ -79,6 +77,7 @@ async def get_upgrade_progress_handler(
     node_pool: str | None = None,
 ) -> UpgradeProgressOutput:
     """Core handler for get_upgrade_progress on a single cluster."""
+    validate_node_pool(node_pool)
     config = resolve_cluster(cluster_id)
     aks_client = AzureAksClient(config)
     core_client = K8sCoreClient(config)
@@ -216,4 +215,11 @@ async def get_upgrade_progress_handler(
 async def get_upgrade_progress_all(node_pool: str | None = None) -> list[UpgradeProgressOutput]:
     """Fan-out get_upgrade_progress to all clusters concurrently."""
     tasks = [get_upgrade_progress_handler(cid, node_pool) for cid in ALL_CLUSTER_IDS]
-    return list(await asyncio.gather(*tasks, return_exceptions=False))
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    outputs: list[UpgradeProgressOutput] = []
+    for cid, result in zip(ALL_CLUSTER_IDS, results, strict=True):
+        if isinstance(result, BaseException):
+            log.error("fan_out_cluster_failed", tool="get_upgrade_progress", cluster=cid, error=str(result))
+        else:
+            outputs.append(result)
+    return outputs

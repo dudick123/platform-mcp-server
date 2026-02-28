@@ -175,7 +175,9 @@ class TestGetUpgradeProgress:
         mock_core = AsyncMock()
         mock_core.get_nodes.return_value = [_make_node("node-1", version="v1.29.8", unschedulable=True)]
         mock_events = AsyncMock()
-        mock_events.get_node_events.return_value = []
+        mock_events.get_node_events.return_value = [
+            _make_event("node-1", "NodeUpgrade", "2026-02-28T11:50:00+00:00"),
+        ]
         mock_policy = AsyncMock()
         mock_policy.get_pdbs.return_value = [
             {

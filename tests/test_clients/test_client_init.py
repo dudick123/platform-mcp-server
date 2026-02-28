@@ -21,7 +21,7 @@ class TestK8sCoreClientInit:
     def test_get_api_creates_once(self) -> None:
         config = CLUSTER_MAP["prod-eastus"]
         client = K8sCoreClient(config)
-        with patch("platform_mcp_server.clients.k8s_core._load_k8s_client") as mock_load:
+        with patch("platform_mcp_server.clients.k8s_core.load_k8s_api_client") as mock_load:
             mock_load.return_value = MagicMock()
             api1 = client._get_api()
             api2 = client._get_api()
@@ -38,17 +38,12 @@ class TestK8sEventsClientInit:
     def test_get_api_creates_once(self) -> None:
         config = CLUSTER_MAP["prod-eastus"]
         client = K8sEventsClient(config)
-        with (
-            patch("platform_mcp_server.clients.k8s_events.k8s_config") as mock_cfg,
-            patch("platform_mcp_server.clients.k8s_events.k8s_client") as mock_k8s,
-        ):
-            mock_k8s.Configuration.get_default_copy.return_value = MagicMock()
-            mock_k8s.ApiClient.return_value = MagicMock()
-            mock_k8s.CoreV1Api.return_value = MagicMock()
+        with patch("platform_mcp_server.clients.k8s_events.load_k8s_api_client") as mock_load:
+            mock_load.return_value = MagicMock()
             api1 = client._get_api()
             api2 = client._get_api()
         assert api1 is api2
-        mock_cfg.load_kube_config.assert_called_once()
+        mock_load.assert_called_once()
 
 
 class TestK8sMetricsClientInit:
@@ -60,17 +55,12 @@ class TestK8sMetricsClientInit:
     def test_get_api_creates_once(self) -> None:
         config = CLUSTER_MAP["prod-eastus"]
         client = K8sMetricsClient(config)
-        with (
-            patch("platform_mcp_server.clients.k8s_metrics.k8s_config") as mock_cfg,
-            patch("platform_mcp_server.clients.k8s_metrics.k8s_client") as mock_k8s,
-        ):
-            mock_k8s.Configuration.get_default_copy.return_value = MagicMock()
-            mock_k8s.ApiClient.return_value = MagicMock()
-            mock_k8s.CustomObjectsApi.return_value = MagicMock()
+        with patch("platform_mcp_server.clients.k8s_metrics.load_k8s_api_client") as mock_load:
+            mock_load.return_value = MagicMock()
             api1 = client._get_api()
             api2 = client._get_api()
         assert api1 is api2
-        mock_cfg.load_kube_config.assert_called_once()
+        mock_load.assert_called_once()
 
 
 class TestK8sPolicyClientInit:
@@ -82,17 +72,12 @@ class TestK8sPolicyClientInit:
     def test_get_api_creates_once(self) -> None:
         config = CLUSTER_MAP["prod-eastus"]
         client = K8sPolicyClient(config)
-        with (
-            patch("platform_mcp_server.clients.k8s_policy.k8s_config") as mock_cfg,
-            patch("platform_mcp_server.clients.k8s_policy.k8s_client") as mock_k8s,
-        ):
-            mock_k8s.Configuration.get_default_copy.return_value = MagicMock()
-            mock_k8s.ApiClient.return_value = MagicMock()
-            mock_k8s.PolicyV1Api.return_value = MagicMock()
+        with patch("platform_mcp_server.clients.k8s_policy.load_k8s_api_client") as mock_load:
+            mock_load.return_value = MagicMock()
             api1 = client._get_api()
             api2 = client._get_api()
         assert api1 is api2
-        mock_cfg.load_kube_config.assert_called_once()
+        mock_load.assert_called_once()
 
 
 class TestAzureAksClientInit:

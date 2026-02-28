@@ -54,8 +54,9 @@ async def check_node_pool_pressure(cluster: str) -> str:
         log.info("tool_completed", tool="check_node_pool_pressure", cluster=cluster, latency_ms=_elapsed_ms(start))
         return output
     except Exception as e:
-        log.error("tool_failed", tool="check_node_pool_pressure", cluster=cluster, error=str(e))
-        raise
+        sanitised = scrub_sensitive_values(str(e))
+        log.error("tool_failed", tool="check_node_pool_pressure", cluster=cluster, error=sanitised)
+        raise RuntimeError(sanitised) from None
 
 
 @mcp.tool()
@@ -77,6 +78,7 @@ async def get_pod_health(
         status_filter: Filter by status: 'pending', 'failed', or 'all'.
         lookback_minutes: Include resolved failures within this window. Default 30.
     """
+    lookback_minutes = max(1, min(lookback_minutes, 1440))
     start = time.monotonic()
     try:
         if cluster == "all":
@@ -88,8 +90,9 @@ async def get_pod_health(
         log.info("tool_completed", tool="get_pod_health", cluster=cluster, latency_ms=_elapsed_ms(start))
         return output
     except Exception as e:
-        log.error("tool_failed", tool="get_pod_health", cluster=cluster, error=str(e))
-        raise
+        sanitised = scrub_sensitive_values(str(e))
+        log.error("tool_failed", tool="get_pod_health", cluster=cluster, error=sanitised)
+        raise RuntimeError(sanitised) from None
 
 
 @mcp.tool()
@@ -114,8 +117,9 @@ async def get_kubernetes_upgrade_status(cluster: str) -> str:
         log.info("tool_completed", tool="get_kubernetes_upgrade_status", cluster=cluster, latency_ms=_elapsed_ms(start))
         return output
     except Exception as e:
-        log.error("tool_failed", tool="get_kubernetes_upgrade_status", cluster=cluster, error=str(e))
-        raise
+        sanitised = scrub_sensitive_values(str(e))
+        log.error("tool_failed", tool="get_kubernetes_upgrade_status", cluster=cluster, error=sanitised)
+        raise RuntimeError(sanitised) from None
 
 
 @mcp.tool()
@@ -141,8 +145,9 @@ async def get_upgrade_progress(cluster: str, node_pool: str | None = None) -> st
         log.info("tool_completed", tool="get_upgrade_progress", cluster=cluster, latency_ms=_elapsed_ms(start))
         return output
     except Exception as e:
-        log.error("tool_failed", tool="get_upgrade_progress", cluster=cluster, error=str(e))
-        raise
+        sanitised = scrub_sensitive_values(str(e))
+        log.error("tool_failed", tool="get_upgrade_progress", cluster=cluster, error=sanitised)
+        raise RuntimeError(sanitised) from None
 
 
 @mcp.tool()
@@ -158,6 +163,7 @@ async def get_upgrade_duration_metrics(cluster: str, node_pool: str, history_cou
         node_pool: The node pool to query duration metrics for.
         history_count: Number of historical records to retrieve. Default 5.
     """
+    history_count = max(1, min(history_count, 50))
     start = time.monotonic()
     try:
         if cluster == "all":
@@ -169,8 +175,9 @@ async def get_upgrade_duration_metrics(cluster: str, node_pool: str, history_cou
         log.info("tool_completed", tool="get_upgrade_duration_metrics", cluster=cluster, latency_ms=_elapsed_ms(start))
         return output
     except Exception as e:
-        log.error("tool_failed", tool="get_upgrade_duration_metrics", cluster=cluster, error=str(e))
-        raise
+        sanitised = scrub_sensitive_values(str(e))
+        log.error("tool_failed", tool="get_upgrade_duration_metrics", cluster=cluster, error=sanitised)
+        raise RuntimeError(sanitised) from None
 
 
 @mcp.tool()
@@ -197,8 +204,9 @@ async def check_pdb_upgrade_risk(cluster: str, node_pool: str | None = None, mod
         log.info("tool_completed", tool="check_pdb_upgrade_risk", cluster=cluster, latency_ms=_elapsed_ms(start))
         return output
     except Exception as e:
-        log.error("tool_failed", tool="check_pdb_upgrade_risk", cluster=cluster, error=str(e))
-        raise
+        sanitised = scrub_sensitive_values(str(e))
+        log.error("tool_failed", tool="check_pdb_upgrade_risk", cluster=cluster, error=sanitised)
+        raise RuntimeError(sanitised) from None
 
 
 def _elapsed_ms(start: float) -> int:
