@@ -14,7 +14,7 @@ from platform_mcp_server.clients.k8s_events import K8sEventsClient
 from platform_mcp_server.config import ALL_CLUSTER_IDS, resolve_cluster
 from platform_mcp_server.models import PodDetail, PodHealthOutput, ToolError
 from platform_mcp_server.tools.pod_classification import categorize_failure, is_unhealthy
-from platform_mcp_server.validation import validate_namespace
+from platform_mcp_server.validation import validate_namespace, validate_status_filter
 
 log = structlog.get_logger()
 
@@ -51,9 +51,11 @@ async def get_pod_health_handler(
     lookback_minutes: int = 30,
 ) -> PodHealthOutput:
     """Core handler for get_pod_health on a single cluster."""
-    # Note 15: validate_namespace is called before any API calls so an invalid input
-    # Note 16: raises immediately (fail-fast), avoiding unnecessary network round trips.
+    # Note 15: validate_namespace and validate_status_filter are called before any API
+    # Note 16: calls so invalid inputs raise immediately (fail-fast), avoiding unnecessary
+    # Note 17: network round trips.
     validate_namespace(namespace)
+    validate_status_filter(status_filter)
     config = resolve_cluster(cluster_id)
     core_client = K8sCoreClient(config)
     events_client = K8sEventsClient(config)

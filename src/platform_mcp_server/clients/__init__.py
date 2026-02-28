@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from kubernetes import client as k8s_client
+
 # Note 2: `new_client_from_config` constructs a fully isolated ApiClient bound to a
 # single kubeconfig context without touching any global SDK state.  The alternative,
 # `load_incluster_config`, mutates a process-wide singleton and would race when

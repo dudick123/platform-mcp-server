@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import structlog
+
 # Note 1: DefaultAzureCredential implements a credential chain: it tries, in order,
 # Note 2: environment variables (AZURE_CLIENT_ID / AZURE_CLIENT_SECRET / AZURE_TENANT_ID),
 # Note 3: then workload identity, then managed identity, then the Azure CLI token cache,
@@ -13,9 +14,11 @@ import structlog
 # Note 5: code works in CI (env vars), on Azure VMs (managed identity), and on developer
 # Note 6: laptops (az CLI) without any conditional logic in the application itself.
 from azure.identity import DefaultAzureCredential
+
 # Note 7: ContainerServiceClient talks to the Microsoft.ContainerService management plane.
 # Note 8: It is used for cluster CRUD operations, node pool management, and upgrade profiles.
 from azure.mgmt.containerservice import ContainerServiceClient
+
 # Note 9: MonitorManagementClient talks to the Azure Monitor management plane. It provides
 # Note 10: access to Activity Logs (audit trail of ARM operations) which is a separate API
 # Note 11: surface from the container service plane -- hence a second client is required.

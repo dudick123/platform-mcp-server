@@ -11,11 +11,13 @@ import sys
 import time
 
 import structlog
+
 # Note 5: FastMCP is Anthropic's high-level Python SDK that wraps the low-level MCP wire
 # Note 6: protocol. It converts plain async functions into MCP-compliant tool descriptors
 # Note 7: automatically, so you write ordinary Python and get a standards-compliant server.
 from mcp.server.fastmcp import FastMCP
 
+from platform_mcp_server.config import validate_cluster_config
 from platform_mcp_server.models import scrub_sensitive_values
 from platform_mcp_server.tools.k8s_upgrades import get_upgrade_status_all, get_upgrade_status_handler
 from platform_mcp_server.tools.node_pools import check_node_pool_pressure_all, check_node_pool_pressure_handler
@@ -275,4 +277,9 @@ def _elapsed_ms(start: float) -> int:
 # Note 46: engineer's workstation). There is no need for a network listener, and stdio avoids
 # Note 47: port conflicts, firewall rules, and TLS certificate management entirely.
 if __name__ == "__main__":
+    # Note 48: validate_cluster_config() is called here — after import but before serving
+    # Note 49: any requests — so a misconfigured deployment (placeholder subscription IDs)
+    # Note 50: fails immediately with a clear error rather than silently making real Azure
+    # Note 51: API calls with invalid credentials at the first tool invocation.
+    validate_cluster_config()
     mcp.run(transport="stdio")

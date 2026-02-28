@@ -16,7 +16,6 @@ from __future__ import annotations
 # serialization — naive datetimes would serialize without timezone info and could produce
 # different ISO 8601 strings depending on the system locale.
 from datetime import UTC, datetime
-
 from unittest.mock import MagicMock, patch
 
 import pytest

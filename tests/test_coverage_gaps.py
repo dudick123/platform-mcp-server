@@ -49,7 +49,6 @@ from platform_mcp_server.tools.upgrade_progress import (
     get_upgrade_progress_handler,
 )
 
-
 # ---------------------------------------------------------------------------
 # clients/__init__.py — load_k8s_api_client
 # ---------------------------------------------------------------------------
