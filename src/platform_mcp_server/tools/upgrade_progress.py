@@ -13,10 +13,20 @@ from platform_mcp_server.clients.k8s_core import K8sCoreClient
 from platform_mcp_server.clients.k8s_events import K8sEventsClient
 from platform_mcp_server.clients.k8s_policy import K8sPolicyClient
 from platform_mcp_server.config import ALL_CLUSTER_IDS, get_thresholds, resolve_cluster
-from platform_mcp_server.models import NodeUpgradeState, ToolError, UpgradeProgressOutput
+from platform_mcp_server.models import (
+    AffectedPod,
+    NodeUpgradeState,
+    PodTransitionSummary,
+    ToolError,
+    UpgradeProgressOutput,
+)
+from platform_mcp_server.tools.pod_classification import categorize_failure, is_unhealthy
 from platform_mcp_server.validation import validate_node_pool
 
 log = structlog.get_logger()
+
+_POD_TRANSITION_CAP = 20
+_ACTIVE_UPGRADE_STATES = {"cordoned", "upgrading", "pdb_blocked", "stalled"}
 
 
 def _parse_event_timestamp(ts_str: str | None) -> datetime | None:
@@ -70,6 +80,72 @@ def _classify_node_state(
 
     # Pending: old version, not yet cordoned
     return "pending"
+
+
+async def _collect_pod_transitions(
+    core_client: K8sCoreClient,
+    node_states: list[NodeUpgradeState],
+    errors: list[ToolError],
+    cluster_id: str,
+) -> PodTransitionSummary:
+    """Collect pod transitions on nodes actively involved in the upgrade."""
+    # Identify nodes in active upgrade states
+    active_node_names = {n.name for n in node_states if n.state in _ACTIVE_UPGRADE_STATES}
+
+    if not active_node_names:
+        return PodTransitionSummary()
+
+    try:
+        all_pods = await core_client.get_pods()
+    except Exception:
+        errors.append(
+            ToolError(
+                error="Failed to retrieve pods for transition summary",
+                source="k8s-api",
+                cluster=cluster_id,
+                partial_data=True,
+            )
+        )
+        return PodTransitionSummary()
+
+    # Filter to unhealthy pods on active upgrade nodes
+    affected = [p for p in all_pods if p.get("node_name") in active_node_names and is_unhealthy(p)]
+
+    pending_count = sum(1 for p in affected if p.get("phase") == "Pending")
+    failed_count = sum(1 for p in affected if p.get("phase") in ("Failed", "Unknown"))
+    # Include running pods with bad container states in failed count
+    other_unhealthy = len(affected) - pending_count - failed_count
+    failed_count += other_unhealthy
+
+    # Group by failure category
+    by_category: dict[str, int] = {}
+    for pod in affected:
+        category = categorize_failure(pod.get("reason"), pod.get("container_statuses", []))
+        by_category[category] = by_category.get(category, 0) + 1
+
+    # Sort: Failed first, then Pending
+    phase_order = {"Failed": 0, "Unknown": 1, "Pending": 2}
+    affected.sort(key=lambda p: phase_order.get(p.get("phase", ""), 3))
+
+    # Build affected pod list (capped)
+    affected_pods = [
+        AffectedPod(
+            name=p["name"],
+            namespace=p.get("namespace", "unknown"),
+            phase=p.get("phase", "Unknown"),
+            reason=p.get("reason"),
+            node_name=p.get("node_name"),
+        )
+        for p in affected[:_POD_TRANSITION_CAP]
+    ]
+
+    return PodTransitionSummary(
+        pending_count=pending_count,
+        failed_count=failed_count,
+        by_category=by_category,
+        affected_pods=affected_pods,
+        total_affected=len(affected),
+    )
 
 
 async def get_upgrade_progress_handler(
@@ -189,6 +265,9 @@ async def get_upgrade_progress_handler(
                 f"{thresholds.upgrade_anomaly_minutes}-minute expected baseline"
             )
 
+    # Pod transition summary
+    pod_transitions = await _collect_pod_transitions(core_client, node_states, errors, cluster_id)
+
     summary = (
         f"{cluster_id}: {upgraded_count}/{total_count} nodes upgraded"
         f"{', upgrade in progress' if remaining > 0 else ', upgrade complete'}"
@@ -206,6 +285,7 @@ async def get_upgrade_progress_handler(
         elapsed_seconds=elapsed_seconds,
         estimated_remaining_seconds=estimated_remaining,
         anomaly_flag=anomaly_flag,
+        pod_transitions=pod_transitions,
         summary=summary,
         timestamp=datetime.now(tz=UTC).isoformat(),
         errors=errors,

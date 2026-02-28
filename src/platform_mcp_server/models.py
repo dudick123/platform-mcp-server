@@ -178,6 +178,26 @@ class UpgradeProgressInput(BaseModel):
     node_pool: str | None = None
 
 
+class AffectedPod(BaseModel):
+    """A pod affected by an upgrade-related node transition."""
+
+    name: str
+    namespace: str
+    phase: str
+    reason: str | None = None
+    node_name: str | None = None
+
+
+class PodTransitionSummary(BaseModel):
+    """Summary of pod transitions during an upgrade."""
+
+    pending_count: int = 0
+    failed_count: int = 0
+    by_category: dict[str, int] = Field(default_factory=dict)
+    affected_pods: list[AffectedPod] = Field(default_factory=list)
+    total_affected: int = 0
+
+
 class UpgradeProgressOutput(BaseModel):
     """Output for get_upgrade_progress."""
 
@@ -192,6 +212,7 @@ class UpgradeProgressOutput(BaseModel):
     elapsed_seconds: float | None = None
     estimated_remaining_seconds: float | None = None
     anomaly_flag: str | None = None
+    pod_transitions: PodTransitionSummary | None = None
     summary: str
     timestamp: str
     errors: list[ToolError] = Field(default_factory=list)

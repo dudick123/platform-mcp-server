@@ -6,6 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from platform_mcp_server.models import (
+    AffectedPod,
     NodePoolPressureInput,
     NodePoolPressureOutput,
     NodePoolResult,
@@ -15,6 +16,7 @@ from platform_mcp_server.models import (
     PodDetail,
     PodHealthInput,
     PodHealthOutput,
+    PodTransitionSummary,
     ToolError,
     UpgradeDurationInput,
     UpgradeDurationOutput,
@@ -213,6 +215,56 @@ class TestUpgradeProgressModels:
             timestamp="2026-02-28T12:00:00Z",
         )
         assert output.upgrade_in_progress is False
+        assert output.pod_transitions is None
+
+    def test_output_with_pod_transitions(self) -> None:
+        pod = AffectedPod(
+            name="web-abc",
+            namespace="default",
+            phase="Pending",
+            reason="Unschedulable",
+            node_name="node-1",
+        )
+        transitions = PodTransitionSummary(
+            pending_count=3,
+            failed_count=1,
+            by_category={"scheduling": 3, "runtime": 1},
+            affected_pods=[pod],
+            total_affected=4,
+        )
+        output = UpgradeProgressOutput(
+            cluster="prod-eastus",
+            upgrade_in_progress=True,
+            nodes=[],
+            pod_transitions=transitions,
+            summary="prod-eastus: 0/0 nodes upgraded",
+            timestamp="2026-02-28T12:00:00Z",
+        )
+        assert output.pod_transitions is not None
+        assert output.pod_transitions.pending_count == 3
+        assert output.pod_transitions.failed_count == 1
+        assert len(output.pod_transitions.affected_pods) == 1
+        assert output.pod_transitions.affected_pods[0].name == "web-abc"
+
+    def test_pod_transition_summary_defaults(self) -> None:
+        summary = PodTransitionSummary()
+        assert summary.pending_count == 0
+        assert summary.failed_count == 0
+        assert summary.by_category == {}
+        assert summary.affected_pods == []
+        assert summary.total_affected == 0
+
+    def test_affected_pod_serialization(self) -> None:
+        pod = AffectedPod(
+            name="api-xyz",
+            namespace="payments",
+            phase="Failed",
+            reason="OOMKilled",
+            node_name="node-2",
+        )
+        data = pod.model_dump()
+        assert data["name"] == "api-xyz"
+        assert data["node_name"] == "node-2"
 
 
 class TestUpgradeDurationModels:
