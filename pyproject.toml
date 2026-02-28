@@ -3,7 +3,7 @@ name = "platform-mcp-server"
 version = "0.1.0"
 description = "Platform MCP Server — exposes AKS operational data to AI assistants via the Model Context Protocol"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 license = "MIT"
 authors = [
     { name = "Platform Engineering" },
@@ -36,7 +36,7 @@ build-backend = "hatchling.build"
 packages = ["src/platform_mcp_server"]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py314"
 line-length = 120
 
 [tool.ruff.lint]
@@ -55,7 +55,7 @@ select = [
 known-first-party = ["platform_mcp_server"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
