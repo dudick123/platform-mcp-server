@@ -71,22 +71,14 @@ uv sync
 
 ### 2. Configure clusters
 
-Edit `src/platform_mcp_server/config.py` and replace the placeholder subscription IDs with your real values:
+Copy the example cluster configuration and fill in your real Azure subscription IDs:
 
-```python
-CLUSTER_MAP = {
-    "dev-eastus": ClusterConfig(
-        cluster_id="dev-eastus",
-        environment="dev",
-        region="eastus",
-        subscription_id="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",  # your subscription
-        resource_group="rg-dev-eastus",
-        aks_cluster_name="aks-dev-eastus",
-        kubeconfig_context="aks-dev-eastus",
-    ),
-    # ... configure remaining clusters
-}
+```bash
+cp clusters.example.yaml clusters.yaml
+# Edit clusters.yaml and replace <*-subscription-id> placeholders with real UUIDs
 ```
+
+The `clusters.yaml` file is git-ignored so credentials are never committed. You can override the file path with the `PLATFORM_MCP_CLUSTERS` environment variable.
 
 ### 3. Authenticate
 
@@ -253,13 +245,15 @@ Thresholds are configurable via environment variables:
 | `PRESSURE_PENDING_PODS_WARNING` | `1` | Pending pod count to trigger warning |
 | `PRESSURE_PENDING_PODS_CRITICAL` | `10` | Pending pod count to trigger critical |
 | `UPGRADE_ANOMALY_MINUTES` | `60` | Minutes before an upgrade is flagged as stalled |
+| `PLATFORM_MCP_CLUSTERS` | `clusters.yaml` | Path to cluster configuration YAML file |
 
 ## Project structure
 
 ```
+clusters.example.yaml          # Template cluster configuration (copy to clusters.yaml)
 src/platform_mcp_server/
 ├── server.py              # MCP entry point and tool registration
-├── config.py              # Cluster mappings and thresholds
+├── config.py              # Cluster YAML loader and thresholds
 ├── models.py              # Pydantic v2 I/O schemas
 ├── validation.py          # Input validation (namespace, node pool, mode)
 ├── utils.py               # Shared utilities (timestamp parsing)

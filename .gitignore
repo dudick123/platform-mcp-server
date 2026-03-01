@@ -31,6 +31,9 @@ venv/
 .env
 .env.local
 
+# Cluster configuration (contains real subscription IDs)
+clusters.yaml
+
 # OS
 .DS_Store
 Thumbs.db

@@ -1,0 +1,54 @@
+# Cluster configuration for Platform MCP Server.
+# Copy this file to clusters.yaml and replace placeholder subscription IDs
+# with real Azure subscription UUIDs.
+#
+# Override the file path with the PLATFORM_MCP_CLUSTERS environment variable.
+
+clusters:
+  dev-eastus:
+    environment: dev
+    region: eastus
+    subscription_id: "<dev-subscription-id>"
+    resource_group: rg-dev-eastus
+    aks_cluster_name: aks-dev-eastus
+    kubeconfig_context: aks-dev-eastus
+
+  dev-westus2:
+    environment: dev
+    region: westus2
+    subscription_id: "<dev-subscription-id>"
+    resource_group: rg-dev-westus2
+    aks_cluster_name: aks-dev-westus2
+    kubeconfig_context: aks-dev-westus2
+
+  staging-eastus:
+    environment: staging
+    region: eastus
+    subscription_id: "<staging-subscription-id>"
+    resource_group: rg-staging-eastus
+    aks_cluster_name: aks-staging-eastus
+    kubeconfig_context: aks-staging-eastus
+
+  staging-westus2:
+    environment: staging
+    region: westus2
+    subscription_id: "<staging-subscription-id>"
+    resource_group: rg-staging-westus2
+    aks_cluster_name: aks-staging-westus2
+    kubeconfig_context: aks-staging-westus2
+
+  prod-eastus:
+    environment: prod
+    region: eastus
+    subscription_id: "<prod-subscription-id>"
+    resource_group: rg-prod-eastus
+    aks_cluster_name: aks-prod-eastus
+    kubeconfig_context: aks-prod-eastus
+
+  prod-westus2:
+    environment: prod
+    region: westus2
+    subscription_id: "<prod-subscription-id>"
+    resource_group: rg-prod-westus2
+    aks_cluster_name: aks-prod-westus2
+    kubeconfig_context: aks-prod-westus2

@@ -37,9 +37,10 @@ AI Assistant (Claude, Cursor, etc.)
 ## Project Layout
 
 ```
+clusters.example.yaml           # Template cluster config (copy to clusters.yaml)
 src/platform_mcp_server/
 ├── server.py               # MCP entry point; tool registrations with @mcp.tool()
-├── config.py               # ClusterConfig frozen dataclasses, ThresholdConfig, CLUSTER_MAP
+├── config.py               # ClusterConfig frozen dataclasses, ThresholdConfig, YAML loader
 ├── models.py               # All Pydantic v2 models for tool I/O
 ├── validation.py           # Input validation helpers
 ├── utils.py                # Shared utilities (timestamp parsing)
@@ -90,7 +91,7 @@ tests/
 
 ### General
 - All files start with `from __future__ import annotations`.
-- Use `Literal` types for closed string sets (e.g., `ClusterID`).
+- Cluster configuration is loaded from `clusters.yaml` (YAML) at startup, not hardcoded.
 - Use frozen `@dataclass` for config objects — never plain dicts.
 - Use Pydantic v2 models for all tool inputs and outputs.
 - `structlog` for all logging — never `print()` or stdlib `logging` directly.

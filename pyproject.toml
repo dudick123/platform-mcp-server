@@ -16,6 +16,7 @@ dependencies = [
     "azure-mgmt-monitor",
     "pydantic>=2.0",
     "structlog",
+    "pyyaml>=6.0.3",
 ]
 
 [dependency-groups]
@@ -27,6 +28,7 @@ dev = [
     "ruff",
     "pre-commit",
     "bandit[toml]>=1.9.4",
+    "types-pyyaml>=6.0.12.20250915",
 ]
 
 [build-system]
