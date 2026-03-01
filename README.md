@@ -54,7 +54,7 @@ Platform MCP Server gives platform engineers natural-language access to monitori
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.14+
 - [uv](https://docs.astral.sh/uv/) package manager
 - Azure CLI authenticated (`az login`)
 - Kubeconfig with contexts for your AKS clusters (`az aks get-credentials`)

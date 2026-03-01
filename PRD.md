@@ -438,7 +438,7 @@ When `partial_data` is `True`, the tool response includes both the error and wha
 | Layer | Technology | Rationale |
 |---|---|---|
 | MCP Framework | `mcp[cli]` (Python FastMCP) | Official Anthropic SDK; simplest tool definition pattern |
-| Language | Python 3.11+ | Matches existing platform tooling (Typer CLIs, Pydantic) |
+| Language | Python 3.14+ | Matches existing platform tooling (Typer CLIs, Pydantic) |
 | Package Management | `uv` | Fast, lockfile-based; consistent with platform Python tooling |
 | Kubernetes Client | `kubernetes` (official Python client) | Core API (pods, nodes, events), Metrics API (`metrics.k8s.io`), and Events API; uses kubeconfig from `az aks get-credentials` |
 | Azure Client | `azure-mgmt-containerservice` + `azure-identity` | AKS management plane: cluster versions, node pool state, upgrade profiles; `DefaultAzureCredential` for auth |
