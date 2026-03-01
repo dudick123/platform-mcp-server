@@ -220,12 +220,7 @@ class TestValidateClusterConfig:
     """Tests for startup config validation."""
 
     def test_detects_placeholder_subscription_ids(self) -> None:
-        # Note 21: `validate_cluster_config` is called at server startup to prevent
-        # the server from running with unconfigured placeholder values. This test
-        # verifies that the *current* CLUSTER_MAP (which uses placeholder IDs in
-        # the repository) would trigger the guard. It is a meta-test: it validates
-        # the validator catches the known-bad state of the repo's default config.
-        with pytest.raises(RuntimeError, match="Placeholder subscription IDs"):
+        with pytest.raises(RuntimeError, match="placeholder subscription_id detected"):
             validate_cluster_config()
 
     def test_accepts_real_subscription_ids(self) -> None:

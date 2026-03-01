@@ -166,7 +166,6 @@ Get diagnostics for failed and pending pods.
 cluster: "prod-eastus"
 namespace: "default"        # optional — omit for all namespaces
 status_filter: "all"        # "pending", "failed", or "all"
-lookback_minutes: 30        # 1–1440
 ```
 
 Returns pods grouped by failure category with restart counts, event context, and OOMKill detection. Capped at 50 pods.

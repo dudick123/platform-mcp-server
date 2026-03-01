@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any
 
 import structlog
@@ -26,12 +28,14 @@ class K8sPolicyClient:
         # Note 6: graduated from `policy/v1beta1` in Kubernetes 1.21. Using the
         # Note 7: stable v1 group avoids deprecation warnings on modern clusters.
         self._api: k8s_client.PolicyV1Api | None = None
+        self._lock = threading.Lock()
 
     def _get_api(self) -> k8s_client.PolicyV1Api:
-        if self._api is None:
-            api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
-            self._api = k8s_client.PolicyV1Api(api_client)
-        return self._api
+        with self._lock:
+            if self._api is None:
+                api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
+                self._api = k8s_client.PolicyV1Api(api_client)
+            return self._api
 
     async def get_pdbs(self, namespace: str | None = None) -> list[dict[str, Any]]:
         """List all PodDisruptionBudgets.
@@ -47,12 +51,16 @@ class K8sPolicyClient:
                 # Note 8: `list_namespaced_pod_disruption_budget` scopes the request to a
                 # Note 9: single namespace when the caller already knows the target namespace,
                 # Note 10: reducing the response payload and API server load.
-                pdb_list = api.list_namespaced_pod_disruption_budget(namespace)
+                pdb_list = await asyncio.to_thread(
+                    api.list_namespaced_pod_disruption_budget, namespace
+                )
             else:
                 # Note 11: `list_pod_disruption_budget_for_all_namespaces` is the cluster-wide
                 # Note 12: variant. It is equivalent to `kubectl get pdb -A` and is preferred
                 # Note 13: when building an upgrade safety check that must inspect every PDB.
-                pdb_list = api.list_pod_disruption_budget_for_all_namespaces()
+                pdb_list = await asyncio.to_thread(
+                    api.list_pod_disruption_budget_for_all_namespaces
+                )
         except Exception:
             log.error("failed_to_list_pdbs", cluster=self._cluster_config.cluster_id)
             raise

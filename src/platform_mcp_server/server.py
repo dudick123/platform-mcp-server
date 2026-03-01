@@ -105,7 +105,6 @@ async def get_pod_health(
     cluster: str,
     namespace: str | None = None,
     status_filter: str = "all",
-    lookback_minutes: int = 30,
 ) -> str:
     """Get diagnostics for failed and pending pods in an AKS cluster.
 
@@ -117,16 +116,14 @@ async def get_pod_health(
         cluster: Cluster ID (e.g., 'prod-eastus') or 'all' for fleet-wide query.
         namespace: Filter to a specific namespace. Omit for all namespaces.
         status_filter: Filter by status: 'pending', 'failed', or 'all'.
-        lookback_minutes: Include resolved failures within this window. Default 30.
     """
-    lookback_minutes = max(1, min(lookback_minutes, 1440))
     start = time.monotonic()
     try:
         if cluster == "all":
-            results = await get_pod_health_all(namespace, status_filter, lookback_minutes)
+            results = await get_pod_health_all(namespace, status_filter)
             output = "\n\n".join(scrub_sensitive_values(r.model_dump_json(indent=2)) for r in results)
         else:
-            result = await get_pod_health_handler(cluster, namespace, status_filter, lookback_minutes)
+            result = await get_pod_health_handler(cluster, namespace, status_filter)
             output = scrub_sensitive_values(result.model_dump_json(indent=2))
         log.info("tool_completed", tool="get_pod_health", cluster=cluster, latency_ms=_elapsed_ms(start))
         return output

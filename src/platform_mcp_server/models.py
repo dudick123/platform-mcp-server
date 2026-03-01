@@ -61,9 +61,10 @@ class ToolError(BaseModel):
 # Note 26: machine) that is reused for every call to `.sub()` or `.match()`. Compiling
 # Note 27: inside the function would repeat that work on every invocation.
 # Note 28: The IP pattern uses `\b` word-boundary anchors so it matches only complete
-# Note 29: dotted-quad addresses. `\d{1,3}` allows 1-3 digits per octet, which covers
-# Note 30: the full range 0-255 without a complex numeric range assertion.
-_IP_PATTERN = re.compile(r"\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b")
+# Note 29: dotted-quad addresses. Each octet is validated to be 0-255 using an alternation
+# Note 30: pattern, so invalid IPs like `999.999.999.999` are not matched.
+_OCTET = r"(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)"
+_IP_PATTERN = re.compile(rf"\b{_OCTET}\.{_OCTET}\.{_OCTET}\.{_OCTET}\b")
 # Note 31: The subscription pattern matches the Azure ARM path segment
 # Note 32: `/subscriptions/<guid>`. The character class `[a-f0-9-]` covers lowercase
 # Note 33: hex digits and hyphens that form a UUID. `re.IGNORECASE` is applied because
@@ -167,12 +168,6 @@ class PodHealthInput(BaseModel):
     cluster: VALID_CLUSTERS
     namespace: str | None = None
     status_filter: Literal["pending", "failed", "all"] = "all"
-    # Note 59: `Field(ge=1, le=1440)` attaches built-in Pydantic validators that enforce
-    # Note 60: a numeric range without any manual if-raise guard. `ge` means
-    # Note 61: "greater than or equal to" and `le` means "less than or equal to".
-    # Note 62: Pydantic raises a `ValidationError` automatically if the value falls
-    # Note 63: outside [1, 1440], keeping validation logic out of business code.
-    lookback_minutes: int = Field(default=30, ge=1, le=1440)
 
 
 class PodHealthOutput(BaseModel):

@@ -24,11 +24,15 @@ log = structlog.get_logger()
 # Note 5: that avoids floating-point comparisons across mixed formats.
 def _parse_cpu_millicores(value: str) -> float:
     """Parse a Kubernetes CPU value to millicores."""
-    if value.endswith("m"):
-        return float(value[:-1])
-    # Note 6: A bare numeric string like "4" represents whole cores;
-    # Note 7: multiply by 1000 to normalize to millicores for uniform arithmetic.
-    return float(value) * 1000
+    try:
+        if value.endswith("m"):
+            return float(value[:-1])
+        # Note 6: A bare numeric string like "4" represents whole cores;
+        # Note 7: multiply by 1000 to normalize to millicores for uniform arithmetic.
+        return float(value) * 1000
+    except (ValueError, TypeError):
+        log.warning("cpu_parse_failed", value=value)
+        return 0.0
 
 
 # Note 8: Kubernetes memory uses two families of suffixes with different base multipliers:
@@ -38,22 +42,26 @@ def _parse_cpu_millicores(value: str) -> float:
 # Note 12: Kubernetes internally stores memory in bytes, so all suffixes are normalized here.
 def _parse_memory_bytes(value: str) -> float:
     """Parse a Kubernetes memory value to bytes."""
-    # Note 13: Binary suffixes are checked first because they are the dominant format
-    # Note 14: in Kubernetes node/pod specs. The dict maps suffix -> multiplier cleanly.
-    units = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
-    for suffix, multiplier in units.items():
-        if value.endswith(suffix):
-            return float(value[: -len(suffix)]) * multiplier
-    # Note 15: Decimal suffixes (k, M, G) are less common in Kubernetes but appear
-    # Note 16: in some tooling output and must be handled with SI (base-10) multipliers.
-    if value.endswith("k"):
-        return float(value[:-1]) * 1000
-    if value.endswith("M"):
-        return float(value[:-1]) * 1_000_000
-    if value.endswith("G"):
-        return float(value[:-1]) * 1_000_000_000
-    # Note 17: A bare number with no suffix is interpreted as raw bytes.
-    return float(value)
+    try:
+        # Note 13: Binary suffixes are checked first because they are the dominant format
+        # Note 14: in Kubernetes node/pod specs. The dict maps suffix -> multiplier cleanly.
+        units = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4}
+        for suffix, multiplier in units.items():
+            if value.endswith(suffix):
+                return float(value[: -len(suffix)]) * multiplier
+        # Note 15: Decimal suffixes (k, M, G) are less common in Kubernetes but appear
+        # Note 16: in some tooling output and must be handled with SI (base-10) multipliers.
+        if value.endswith("k"):
+            return float(value[:-1]) * 1000
+        if value.endswith("M"):
+            return float(value[:-1]) * 1_000_000
+        if value.endswith("G"):
+            return float(value[:-1]) * 1_000_000_000
+        # Note 17: A bare number with no suffix is interpreted as raw bytes.
+        return float(value)
+    except (ValueError, TypeError):
+        log.warning("memory_parse_failed", value=value)
+        return 0.0
 
 
 def _classify_pressure(

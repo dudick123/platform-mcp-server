@@ -179,26 +179,15 @@ class TestPodHealthModels:
     """Tests for PodHealthInput and PodHealthOutput."""
 
     def test_input_defaults(self) -> None:
-        # Note 13: Testing that optional fields have correct defaults is just as
-        # important as testing required fields. Default values define the baseline
-        # behavior experienced by operators who omit optional parameters. A changed
-        # default (e.g., `lookback_minutes` shifting from 30 to 60) affects every
-        # caller that relies on the default and must be a conscious decision.
         inp = PodHealthInput(cluster="dev-eastus")
         assert inp.namespace is None
         assert inp.status_filter == "all"
-        assert inp.lookback_minutes == 30
 
     def test_input_with_all_params(self) -> None:
-        # Note 14: This test exercises the "fully specified" input path where all
-        # optional parameters are provided. It verifies Pydantic stores the provided
-        # values rather than falling back to defaults, which would happen if a field
-        # were accidentally marked as read-only or its setter were broken.
         inp = PodHealthInput(
             cluster="prod-eastus",
             namespace="payments",
             status_filter="pending",
-            lookback_minutes=60,
         )
         assert inp.namespace == "payments"
         assert inp.status_filter == "pending"
@@ -621,41 +610,6 @@ class TestInputValidationBounds:
     # the boundary set is: {0 (invalid), 1 (valid min), 1440 (valid max), 1441 (invalid)}.
     # Each boundary gets its own test case because bugs are most likely to occur at
     # boundaries, not in the middle of the valid range.
-
-    def test_lookback_minutes_default(self) -> None:
-        # Note 50: The 30-minute default for `lookback_minutes` represents a
-        # reasonable sliding window for detecting recently-failed or recently-pending
-        # pods. Too short (< 5 minutes) might miss slow-restarting pods; too long
-        # (hours) might return so many historical pods that the output exceeds LLM
-        # context limits. The test documents this design decision.
-        inp = PodHealthInput(cluster="prod-eastus")
-        assert inp.lookback_minutes == 30
-
-    def test_lookback_minutes_valid(self) -> None:
-        # Note 51: 60 minutes is tested as a valid non-default value. This lies
-        # comfortably within the valid range, verifying that the constraint validator
-        # accepts values other than the default (ruling out an accidental hardcoded
-        # equality check rather than a range check).
-        inp = PodHealthInput(cluster="prod-eastus", lookback_minutes=60)
-        assert inp.lookback_minutes == 60
-
-    def test_lookback_minutes_too_high(self) -> None:
-        # Note 52: 1441 is exactly one above the maximum (1440 = 24 hours). This
-        # tests the upper boundary exclusion. If the constraint were `le=1441`
-        # instead of `le=1440`, this test would fail, catching an off-by-one error
-        # in the schema definition. Using 1441 (not 9999) makes the intent of
-        # "boundary" clear.
-        with pytest.raises(ValidationError):
-            PodHealthInput(cluster="prod-eastus", lookback_minutes=1441)
-
-    def test_lookback_minutes_too_low(self) -> None:
-        # Note 53: 0 tests the lower boundary exclusion. The constraint is likely
-        # `ge=1` (greater than or equal to 1), meaning 0 must be rejected. A
-        # lookback of 0 minutes would return no pods or cause a division-by-zero
-        # error in code that computes rates over the window. The schema constraint
-        # prevents this invalid state from reaching business logic.
-        with pytest.raises(ValidationError):
-            PodHealthInput(cluster="prod-eastus", lookback_minutes=0)
 
     def test_history_count_default(self) -> None:
         # Note 54: The default of 5 history records provides a trend sample without

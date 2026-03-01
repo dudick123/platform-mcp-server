@@ -17,26 +17,13 @@ from platform_mcp_server.models import (
     ToolError,
     UpgradeDurationOutput,
 )
+from platform_mcp_server.utils import parse_iso_timestamp
 from platform_mcp_server.validation import validate_node_pool
 
 log = structlog.get_logger()
 
 
-# Note 1: _parse_ts is a thin wrapper around datetime.fromisoformat, the
-# Note 2: standard library parser for ISO 8601 strings (e.g. "2024-01-15T12:00:00Z").
-# Note 3: Returning None instead of raising an exception is intentional graceful
-# Note 4: degradation -- a single malformed timestamp in a stream of events should
-# Note 5: not abort the entire calculation; callers simply skip None values.
-def _parse_ts(ts_str: str | None) -> datetime | None:
-    if not ts_str:
-        return None
-    try:
-        return datetime.fromisoformat(ts_str)
-    except (ValueError, TypeError):  # fmt: skip
-        # Note 6: Both ValueError (bad format) and TypeError (non-string input)
-        # Note 7: are caught here because external event payloads are uncontrolled;
-        # Note 8: returning None lets every call site handle missing data uniformly.
-        return None
+_parse_ts = parse_iso_timestamp
 
 
 async def get_upgrade_metrics_handler(

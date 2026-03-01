@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -43,30 +45,36 @@ class AzureAksClient:
         self._container_client: ContainerServiceClient | None = None
         self._monitor_client: MonitorManagementClient | None = None
         self._credential: DefaultAzureCredential | None = None
+        # RLock is needed because _get_container_client and _get_monitor_client
+        # internally call _get_credential — a non-reentrant Lock would deadlock.
+        self._lock = threading.RLock()
 
     def _get_credential(self) -> DefaultAzureCredential:
         # Note 18: The "if None, create and cache" pattern ensures that DefaultAzureCredential
         # Note 19: is instantiated exactly once per AzureAksClient instance. Reusing the same
         # Note 20: credential object allows the SDK to cache and refresh tokens internally.
-        if self._credential is None:
-            self._credential = DefaultAzureCredential()
-        return self._credential
+        with self._lock:
+            if self._credential is None:
+                self._credential = DefaultAzureCredential()
+            return self._credential
 
     def _get_container_client(self) -> ContainerServiceClient:
-        if self._container_client is None:
-            self._container_client = ContainerServiceClient(
-                credential=self._get_credential(),
-                subscription_id=self._config.subscription_id,
-            )
-        return self._container_client
+        with self._lock:
+            if self._container_client is None:
+                self._container_client = ContainerServiceClient(
+                    credential=self._get_credential(),
+                    subscription_id=self._config.subscription_id,
+                )
+            return self._container_client
 
     def _get_monitor_client(self) -> MonitorManagementClient:
-        if self._monitor_client is None:
-            self._monitor_client = MonitorManagementClient(
-                credential=self._get_credential(),
-                subscription_id=self._config.subscription_id,
-            )
-        return self._monitor_client
+        with self._lock:
+            if self._monitor_client is None:
+                self._monitor_client = MonitorManagementClient(
+                    credential=self._get_credential(),
+                    subscription_id=self._config.subscription_id,
+                )
+            return self._monitor_client
 
     async def get_cluster_info(self) -> dict[str, Any]:
         """Get cluster version and basic info from AKS API.
@@ -79,7 +87,8 @@ class AzureAksClient:
             # Note 22: REST call GET /subscriptions/{sub}/resourceGroups/{rg}/providers/
             # Note 23: Microsoft.ContainerService/managedClusters/{name}. The Python SDK
             # Note 24: deserialises the JSON response into a ManagedCluster model object.
-            cluster = client.managed_clusters.get(
+            cluster = await asyncio.to_thread(
+                client.managed_clusters.get,
                 self._config.resource_group,
                 self._config.aks_cluster_name,
             )
@@ -137,7 +146,8 @@ class AzureAksClient:
         """
         client = self._get_container_client()
         try:
-            pool = client.agent_pools.get(
+            pool = await asyncio.to_thread(
+                client.agent_pools.get,
                 self._config.resource_group,
                 self._config.aks_cluster_name,
                 pool_name,
@@ -173,7 +183,8 @@ class AzureAksClient:
             # Note 39: on the current version, regional rollout status, and Microsoft's support
             # Note 40: policy -- so caching them inside the cluster object would go stale quickly.
             # Note 41: Making a separate call ensures the LLM always sees current upgrade options.
-            profile = client.managed_clusters.get_upgrade_profile(
+            profile = await asyncio.to_thread(
+                client.managed_clusters.get_upgrade_profile,
                 self._config.resource_group,
                 self._config.aks_cluster_name,
             )
@@ -241,13 +252,26 @@ class AzureAksClient:
         )
 
         try:
-            logs = client.activity_logs.list(filter=filter_str)
+            records = await asyncio.to_thread(
+                self._fetch_activity_logs, client, filter_str, count
+            )
         except Exception:
             log.error(
                 "failed_to_get_activity_log",
                 cluster=self._config.cluster_id,
             )
             raise
+
+        return records
+
+    def _fetch_activity_logs(
+        self,
+        client: MonitorManagementClient,
+        filter_str: str,
+        count: int,
+    ) -> list[dict[str, Any]]:
+        """Synchronous helper that fetches and iterates the activity log paginator."""
+        logs = client.activity_logs.list(filter=filter_str)
 
         records: list[dict[str, Any]] = []
         for entry in logs:

@@ -21,6 +21,7 @@ from platform_mcp_server.models import (
     UpgradeProgressOutput,
 )
 from platform_mcp_server.tools.pod_classification import categorize_failure, is_unhealthy
+from platform_mcp_server.utils import parse_iso_timestamp
 from platform_mcp_server.validation import validate_node_pool
 
 log = structlog.get_logger()
@@ -33,19 +34,7 @@ _POD_TRANSITION_CAP = 20
 _ACTIVE_UPGRADE_STATES = {"cordoned", "upgrading", "pdb_blocked", "stalled"}
 
 
-# Note 5: _parse_event_timestamp duplicates the _parse_ts pattern from
-# Note 6: upgrade_metrics.py intentionally. Both modules need the same
-# Note 7: safe ISO 8601 parsing, but they live in separate files to keep
-# Note 8: each module self-contained and independently importable without
-# Note 9: creating a circular dependency through a shared utility module.
-def _parse_event_timestamp(ts_str: str | None) -> datetime | None:
-    """Parse an ISO timestamp string to a datetime."""
-    if not ts_str:
-        return None
-    try:
-        return datetime.fromisoformat(ts_str)
-    except (ValueError, TypeError):  # fmt: skip
-        return None
+_parse_event_timestamp = parse_iso_timestamp
 
 
 # Note 10: The return type uses Literal to enumerate all six valid states as
@@ -205,7 +194,24 @@ async def get_upgrade_progress_handler(
     thresholds = get_thresholds()
     errors: list[ToolError] = []
 
-    cluster_info = await aks_client.get_cluster_info()
+    try:
+        cluster_info = await aks_client.get_cluster_info()
+    except Exception:
+        log.error("get_cluster_info_failed", cluster=cluster_id)
+        return UpgradeProgressOutput(
+            cluster=cluster_id,
+            upgrade_in_progress=False,
+            nodes=[],
+            summary=f"Failed to retrieve cluster info for {cluster_id}",
+            timestamp=datetime.now(tz=UTC).isoformat(),
+            errors=[
+                ToolError(
+                    error="Failed to retrieve cluster info from Azure API",
+                    source="azure-aks",
+                    cluster=cluster_id,
+                )
+            ],
+        )
 
     # Check if any pool is upgrading
     upgrading_pools = [
@@ -276,8 +282,14 @@ async def get_upgrade_progress_handler(
         blocking_pdb = None
         blocking_pdb_ns = None
         if state == "pdb_blocked" and blocker_list:
-            blocking_pdb = blocker_list[0]["name"]
-            blocking_pdb_ns = blocker_list[0].get("namespace")
+            # Try to find a blocker that affects pods on this specific node
+            node_name = node["name"]
+            node_specific = [
+                b for b in blocker_list if node_name in (b.get("affected_nodes") or [])
+            ]
+            chosen = node_specific[0] if node_specific else blocker_list[0]
+            blocking_pdb = chosen["name"]
+            blocking_pdb_ns = chosen.get("namespace")
 
         node_states.append(
             NodeUpgradeState(

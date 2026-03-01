@@ -5,6 +5,8 @@
 # avoiding a forward-reference error if the class is not yet fully resolved.
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any
 
 import structlog
@@ -31,21 +33,23 @@ class K8sMetricsClient:
         # opening a network connection or reading kubeconfig until the client is
         # actually needed, which keeps object instantiation cheap and testable.
         self._api: k8s_client.CustomObjectsApi | None = None
+        self._lock = threading.Lock()
 
     def _get_api(self) -> k8s_client.CustomObjectsApi:
         # Note 4: This is the lazy-initialization (or "lazy singleton") pattern.
         # The `if self._api is None` guard ensures the relatively expensive
         # load_k8s_api_client call -- which reads kubeconfig from disk -- happens
         # only once per K8sMetricsClient instance, not on every request.
-        if self._api is None:
-            api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
-            # Note 5: CustomObjectsApi is the correct class for any API group not
-            # baked into the generated Kubernetes Python client.  It accepts raw
-            # group/version/plural parameters and returns plain Python dicts rather
-            # than typed model objects, matching what the aggregated Metrics API
-            # actually returns over the wire.
-            self._api = k8s_client.CustomObjectsApi(api_client)
-        return self._api
+        with self._lock:
+            if self._api is None:
+                api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
+                # Note 5: CustomObjectsApi is the correct class for any API group not
+                # baked into the generated Kubernetes Python client.  It accepts raw
+                # group/version/plural parameters and returns plain Python dicts rather
+                # than typed model objects, matching what the aggregated Metrics API
+                # actually returns over the wire.
+                self._api = k8s_client.CustomObjectsApi(api_client)
+            return self._api
 
     async def get_node_metrics(self) -> list[dict[str, Any]]:
         """Retrieve CPU and memory usage for all nodes via the Metrics API.
@@ -62,7 +66,8 @@ class K8sMetricsClient:
             #   plural  = "nodes"           -- the resource kind in plural form
             # Using the plural resource name ("nodes" not "node") is required by
             # the Kubernetes API conventions for list endpoints.
-            result = api.list_cluster_custom_object(
+            result = await asyncio.to_thread(
+                api.list_cluster_custom_object,
                 group="metrics.k8s.io",
                 version="v1beta1",
                 plural="nodes",

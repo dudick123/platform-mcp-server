@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 
 # Note 1: `Literal` from typing lets you declare a type as exactly one of a fixed set of string
@@ -169,28 +170,34 @@ def resolve_cluster(cluster_id: str) -> ClusterConfig:
     return CLUSTER_MAP[cluster_id]
 
 
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
+
+
 def validate_cluster_config() -> None:
     """Validate all cluster configurations at startup.
 
-    Raises RuntimeError if placeholder subscription IDs are detected.
+    Raises RuntimeError if placeholder subscription IDs, invalid UUID formats,
+    or empty required fields are detected.
     """
-    # Note 37: This function embodies the "fail fast" philosophy: detect misconfiguration at
-    # Note 38: process startup rather than at the moment a production API call fails with a
-    # Note 39: cryptic Azure authentication error. Raising RuntimeError here aborts the server
-    # Note 40: before it can serve any traffic with a bad config.
-    placeholder_clusters = []
+    errors: list[str] = []
     for cluster_id, config in CLUSTER_MAP.items():
-        # Note 41: The angle-bracket check mirrors the placeholder format used in CLUSTER_MAP above.
-        # Note 42: Detecting both the opening "<" and closing ">" guards against partial edits where
-        # Note 43: someone replaced one bracket but not both, which would still be an invalid ID.
+        # Check subscription_id is a valid UUID (not a placeholder or garbage)
         if config.subscription_id.startswith("<") and config.subscription_id.endswith(">"):
-            placeholder_clusters.append(cluster_id)
-    if placeholder_clusters:
-        clusters = ", ".join(placeholder_clusters)
-        msg = (
-            f"Placeholder subscription IDs detected for clusters: {clusters}. "
-            f"Set real subscription IDs before running in production."
-        )
+            errors.append(f"{cluster_id}: placeholder subscription_id detected")
+        elif not _UUID_RE.match(config.subscription_id):
+            errors.append(f"{cluster_id}: subscription_id is not a valid UUID")
+
+        # Check required string fields are non-empty
+        if not config.resource_group:
+            errors.append(f"{cluster_id}: resource_group is empty")
+        if not config.aks_cluster_name:
+            errors.append(f"{cluster_id}: aks_cluster_name is empty")
+        if not config.kubeconfig_context:
+            errors.append(f"{cluster_id}: kubeconfig_context is empty")
+
+    if errors:
+        detail = "; ".join(errors)
+        msg = f"Cluster configuration errors: {detail}. Fix before running in production."
         raise RuntimeError(msg)
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from typing import Any
 
 import structlog
@@ -37,19 +39,21 @@ class K8sCoreClient:
         # Note 13: which would slow startup and make unit tests that never call the API pay a
         # Note 14: needless overhead cost.
         self._api: k8s_client.CoreV1Api | None = None
+        self._lock = threading.Lock()
 
     def _get_api(self) -> k8s_client.CoreV1Api:
         # Note 15: The None-check gate ensures the expensive setup runs exactly once per instance.
         # Note 16: Subsequent calls return the cached object without touching the filesystem again.
-        if self._api is None:
-            # Note 17: `load_k8s_api_client` constructs a per-context ApiClient rather than calling
-            # Note 18: the global `kubernetes.config.load_kube_config()`. The global call mutates a
-            # Note 19: module-level singleton, which is not safe when multiple K8sCoreClient instances
-            # Note 20: for different clusters exist in the same process -- they would overwrite each
-            # Note 21: other's context. The per-context approach is safe for concurrent multi-cluster use.
-            api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
-            self._api = k8s_client.CoreV1Api(api_client)
-        return self._api
+        with self._lock:
+            if self._api is None:
+                # Note 17: `load_k8s_api_client` constructs a per-context ApiClient rather than calling
+                # Note 18: the global `kubernetes.config.load_kube_config()`. The global call mutates a
+                # Note 19: module-level singleton, which is not safe when multiple K8sCoreClient instances
+                # Note 20: for different clusters exist in the same process -- they would overwrite each
+                # Note 21: other's context. The per-context approach is safe for concurrent multi-cluster use.
+                api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
+                self._api = k8s_client.CoreV1Api(api_client)
+            return self._api
 
     async def get_nodes(self) -> list[dict[str, Any]]:
         """List all nodes with pool grouping metadata.
@@ -59,7 +63,7 @@ class K8sCoreClient:
         """
         api = self._get_api()
         try:
-            node_list = api.list_node()
+            node_list = await asyncio.to_thread(api.list_node)
         except Exception:
             log.error("failed_to_list_nodes", cluster=self._cluster_config.cluster_id)
             raise
@@ -130,9 +134,9 @@ class K8sCoreClient:
                 # Note 40: running pods that the caller will discard immediately.
                 kwargs["field_selector"] = field_selector
             if namespace:
-                pod_list = api.list_namespaced_pod(namespace, **kwargs)
+                pod_list = await asyncio.to_thread(api.list_namespaced_pod, namespace, **kwargs)
             else:
-                pod_list = api.list_pod_for_all_namespaces(**kwargs)
+                pod_list = await asyncio.to_thread(api.list_pod_for_all_namespaces, **kwargs)
         except Exception:
             log.error(
                 "failed_to_list_pods",

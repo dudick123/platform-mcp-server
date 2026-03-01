@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
 from datetime import datetime
 from typing import Any
 
@@ -20,12 +22,14 @@ class K8sEventsClient:
     def __init__(self, cluster_config: ClusterConfig) -> None:
         self._cluster_config = cluster_config
         self._api: k8s_client.CoreV1Api | None = None
+        self._lock = threading.Lock()
 
     def _get_api(self) -> k8s_client.CoreV1Api:
-        if self._api is None:
-            api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
-            self._api = k8s_client.CoreV1Api(api_client)
-        return self._api
+        with self._lock:
+            if self._api is None:
+                api_client = load_k8s_api_client(self._cluster_config.kubeconfig_context)
+                self._api = k8s_client.CoreV1Api(api_client)
+            return self._api
 
     async def get_node_events(
         self,
@@ -50,7 +54,8 @@ class K8sEventsClient:
             # Note 8: a Kubernetes Event is always namespaced to the object it describes.
             # Note 9: The `field_selector` pushes the kind=Node filter to the API server
             # Note 10: so we avoid transferring every event type over the network.
-            events = api.list_event_for_all_namespaces(
+            events = await asyncio.to_thread(
+                api.list_event_for_all_namespaces,
                 field_selector="involvedObject.kind=Node",
             )
         except Exception:
@@ -94,12 +99,14 @@ class K8sEventsClient:
                 # Note 16: it targets a narrower API path (/namespaces/{ns}/events) and avoids
                 # Note 17: fetching events from unrelated namespaces. Pod events are always
                 # Note 18: stored in the same namespace as the pod itself -- never in kube-system.
-                events = api.list_namespaced_event(
+                events = await asyncio.to_thread(
+                    api.list_namespaced_event,
                     namespace,
                     field_selector="involvedObject.kind=Pod",
                 )
             else:
-                events = api.list_event_for_all_namespaces(
+                events = await asyncio.to_thread(
+                    api.list_event_for_all_namespaces,
                     field_selector="involvedObject.kind=Pod",
                 )
         except Exception:

@@ -48,7 +48,6 @@ async def get_pod_health_handler(
     cluster_id: str,
     namespace: str | None = None,
     status_filter: str = "all",
-    lookback_minutes: int = 30,
 ) -> PodHealthOutput:
     """Core handler for get_pod_health on a single cluster."""
     # Note 15: validate_namespace and validate_status_filter are called before any API
@@ -174,10 +173,9 @@ async def get_pod_health_handler(
 async def get_pod_health_all(
     namespace: str | None = None,
     status_filter: str = "all",
-    lookback_minutes: int = 30,
 ) -> list[PodHealthOutput]:
     """Fan-out get_pod_health to all clusters concurrently."""
-    tasks = [get_pod_health_handler(cid, namespace, status_filter, lookback_minutes) for cid in ALL_CLUSTER_IDS]
+    tasks = [get_pod_health_handler(cid, namespace, status_filter) for cid in ALL_CLUSTER_IDS]
     # Note 44: asyncio.gather(*tasks, return_exceptions=True) launches all cluster handlers
     # Note 45: concurrently. return_exceptions=True means a crash in one cluster handler
     # Note 46: is returned as an exception object rather than re-raised, so remaining

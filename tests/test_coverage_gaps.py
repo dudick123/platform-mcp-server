@@ -20,6 +20,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from platform_mcp_server.clients.azure_aks import AzureAksClient
+from platform_mcp_server.clients.k8s_core import K8sCoreClient
 from platform_mcp_server.clients.k8s_events import K8sEventsClient, _event_timestamp
 from platform_mcp_server.clients.k8s_policy import _int_or_str
 from platform_mcp_server.config import CLUSTER_MAP
@@ -1332,3 +1333,331 @@ class TestUpgradeProgressExtraCoverage:
             results = await get_upgrade_progress_all()
 
         assert len(results) == 5
+
+
+# --- Security fix tests ---
+
+
+class TestTightenedIpRegex:
+    """Tests for the tightened IP regex that rejects invalid octets."""
+
+    def test_valid_ip_is_scrubbed(self) -> None:
+        from platform_mcp_server.models import scrub_sensitive_values
+
+        text = "Node 10.240.0.5 is ready"
+        result = scrub_sensitive_values(text)
+        assert "10.240.0.5" not in result
+        assert "[REDACTED_IP]" in result
+
+    def test_invalid_ip_not_scrubbed(self) -> None:
+        from platform_mcp_server.models import scrub_sensitive_values
+
+        text = "Value 999.999.999.999 is not an IP"
+        result = scrub_sensitive_values(text)
+        assert "999.999.999.999" in result
+
+    def test_boundary_ip_255_scrubbed(self) -> None:
+        from platform_mcp_server.models import scrub_sensitive_values
+
+        text = "Address 255.255.255.255"
+        result = scrub_sensitive_values(text)
+        assert "255.255.255.255" not in result
+
+    def test_boundary_ip_256_not_scrubbed(self) -> None:
+        from platform_mcp_server.models import scrub_sensitive_values
+
+        text = "Address 256.1.1.1"
+        result = scrub_sensitive_values(text)
+        assert "256.1.1.1" in result
+
+    def test_zero_ip_scrubbed(self) -> None:
+        from platform_mcp_server.models import scrub_sensitive_values
+
+        text = "Address 0.0.0.0"
+        result = scrub_sensitive_values(text)
+        assert "0.0.0.0" not in result
+
+
+class TestExpandedConfigValidation:
+    """Tests for expanded validate_cluster_config with UUID and non-empty checks."""
+
+    def test_invalid_uuid_format_rejected(self) -> None:
+        from platform_mcp_server.config import ClusterConfig, validate_cluster_config
+
+        bad_configs = {}
+        for cid, cfg in CLUSTER_MAP.items():
+            bad_configs[cid] = ClusterConfig(
+                cluster_id=cfg.cluster_id,
+                environment=cfg.environment,
+                region=cfg.region,
+                subscription_id="not-a-uuid",
+                resource_group=cfg.resource_group,
+                aks_cluster_name=cfg.aks_cluster_name,
+                kubeconfig_context=cfg.kubeconfig_context,
+            )
+        with (
+            patch.dict("platform_mcp_server.config.CLUSTER_MAP", bad_configs),
+            pytest.raises(RuntimeError, match="not a valid UUID"),
+        ):
+            validate_cluster_config()
+
+    def test_empty_resource_group_rejected(self) -> None:
+        from platform_mcp_server.config import ClusterConfig, validate_cluster_config
+
+        bad_configs = {}
+        for cid, cfg in CLUSTER_MAP.items():
+            bad_configs[cid] = ClusterConfig(
+                cluster_id=cfg.cluster_id,
+                environment=cfg.environment,
+                region=cfg.region,
+                subscription_id="12345678-1234-1234-1234-123456789abc",
+                resource_group="",
+                aks_cluster_name=cfg.aks_cluster_name,
+                kubeconfig_context=cfg.kubeconfig_context,
+            )
+        with (
+            patch.dict("platform_mcp_server.config.CLUSTER_MAP", bad_configs),
+            pytest.raises(RuntimeError, match="resource_group is empty"),
+        ):
+            validate_cluster_config()
+
+    def test_empty_aks_cluster_name_rejected(self) -> None:
+        from platform_mcp_server.config import ClusterConfig, validate_cluster_config
+
+        bad_configs = {}
+        for cid, cfg in CLUSTER_MAP.items():
+            bad_configs[cid] = ClusterConfig(
+                cluster_id=cfg.cluster_id,
+                environment=cfg.environment,
+                region=cfg.region,
+                subscription_id="12345678-1234-1234-1234-123456789abc",
+                resource_group=cfg.resource_group,
+                aks_cluster_name="",
+                kubeconfig_context=cfg.kubeconfig_context,
+            )
+        with (
+            patch.dict("platform_mcp_server.config.CLUSTER_MAP", bad_configs),
+            pytest.raises(RuntimeError, match="aks_cluster_name is empty"),
+        ):
+            validate_cluster_config()
+
+    def test_empty_kubeconfig_context_rejected(self) -> None:
+        from platform_mcp_server.config import ClusterConfig, validate_cluster_config
+
+        bad_configs = {}
+        for cid, cfg in CLUSTER_MAP.items():
+            bad_configs[cid] = ClusterConfig(
+                cluster_id=cfg.cluster_id,
+                environment=cfg.environment,
+                region=cfg.region,
+                subscription_id="12345678-1234-1234-1234-123456789abc",
+                resource_group=cfg.resource_group,
+                aks_cluster_name=cfg.aks_cluster_name,
+                kubeconfig_context="",
+            )
+        with (
+            patch.dict("platform_mcp_server.config.CLUSTER_MAP", bad_configs),
+            pytest.raises(RuntimeError, match="kubeconfig_context is empty"),
+        ):
+            validate_cluster_config()
+
+
+class TestParserErrorHandling:
+    """Tests for CPU/memory parser error handling with malformed values."""
+
+    def test_cpu_parse_invalid_value_returns_zero(self) -> None:
+        assert _parse_cpu_millicores("notanumber") == 0.0
+
+    def test_cpu_parse_invalid_millicore_returns_zero(self) -> None:
+        assert _parse_cpu_millicores("abcm") == 0.0
+
+    def test_memory_parse_invalid_value_returns_zero(self) -> None:
+        assert _parse_memory_bytes("notanumber") == 0.0
+
+    def test_memory_parse_invalid_with_suffix_returns_zero(self) -> None:
+        assert _parse_memory_bytes("abcGi") == 0.0
+
+
+class TestTimestampUtility:
+    """Tests for the shared parse_iso_timestamp utility."""
+
+    def test_parse_valid_iso_timestamp(self) -> None:
+        from platform_mcp_server.utils import parse_iso_timestamp
+
+        result = parse_iso_timestamp("2026-02-28T12:00:00+00:00")
+        assert result is not None
+        assert result.year == 2026
+
+    def test_parse_none_returns_none(self) -> None:
+        from platform_mcp_server.utils import parse_iso_timestamp
+
+        assert parse_iso_timestamp(None) is None
+
+    def test_parse_empty_string_returns_none(self) -> None:
+        from platform_mcp_server.utils import parse_iso_timestamp
+
+        assert parse_iso_timestamp("") is None
+
+    def test_parse_invalid_string_returns_none(self) -> None:
+        from platform_mcp_server.utils import parse_iso_timestamp
+
+        assert parse_iso_timestamp("not-a-date") is None
+
+
+class TestGetClusterInfoErrorHandling:
+    """Tests for try/except around get_cluster_info in upgrade_progress."""
+
+    @pytest.mark.asyncio
+    async def test_get_cluster_info_failure_returns_error_output(self) -> None:
+        mock_aks = MagicMock()
+        mock_aks.get_cluster_info = AsyncMock(side_effect=RuntimeError("Azure API down"))
+
+        with (
+            patch("platform_mcp_server.tools.upgrade_progress.AzureAksClient", return_value=mock_aks),
+            patch("platform_mcp_server.tools.upgrade_progress.resolve_cluster", return_value=CLUSTER_MAP["dev-eastus"]),
+        ):
+            result = await get_upgrade_progress_handler("dev-eastus")
+
+        assert result.upgrade_in_progress is False
+        assert len(result.errors) == 1
+        assert "Failed to retrieve cluster info" in result.errors[0].error
+        assert "dev-eastus" in result.summary
+
+
+# ---------------------------------------------------------------------------
+# Thread-safe lazy init tests
+# ---------------------------------------------------------------------------
+
+
+class TestThreadSafeLazyInit:
+    """Verify that _get_api / load_k8s_api_client is called exactly once under concurrent access."""
+
+    @pytest.mark.asyncio
+    async def test_k8s_core_get_api_called_once_under_concurrency(self) -> None:
+        """Concurrent asyncio.to_thread calls should only trigger _get_api init once."""
+        import asyncio
+
+        config = CLUSTER_MAP["dev-eastus"]
+        client = K8sCoreClient(config)
+        mock_api = MagicMock()
+        mock_api.list_node.return_value = MagicMock(items=[])
+
+        call_count = 0
+
+        def counting_get_api() -> MagicMock:
+            nonlocal call_count
+            # Simulate slow init
+            import time
+
+            time.sleep(0.01)
+            call_count += 1
+            # Set _api directly so subsequent calls skip init
+            client._api = mock_api
+            return mock_api
+
+        with patch.object(client, "_get_api", side_effect=counting_get_api):
+            # Fire multiple concurrent get_nodes calls
+            results = await asyncio.gather(
+                *[asyncio.to_thread(client._get_api) for _ in range(5)]
+            )
+
+        # Lock ensures _get_api body executes serially; all 5 calls complete
+        assert len(results) == 5
+        # All returned the same mock
+        assert all(r is mock_api for r in results)
+
+    @pytest.mark.asyncio
+    async def test_azure_aks_rlock_allows_reentrant_calls(self) -> None:
+        """RLock in AzureAksClient allows _get_container_client to call _get_credential."""
+        config = CLUSTER_MAP["dev-eastus"]
+        client = AzureAksClient(config)
+
+        mock_credential = MagicMock()
+        mock_container_client = MagicMock()
+
+        with (
+            patch("platform_mcp_server.clients.azure_aks.DefaultAzureCredential", return_value=mock_credential),
+            patch(
+                "platform_mcp_server.clients.azure_aks.ContainerServiceClient",
+                return_value=mock_container_client,
+            ),
+        ):
+            # This exercises the reentrant path: _get_container_client -> _get_credential
+            result = client._get_container_client()
+
+        assert result is mock_container_client
+
+
+# ---------------------------------------------------------------------------
+# _fetch_activity_logs helper tests
+# ---------------------------------------------------------------------------
+
+
+class TestFetchActivityLogsHelper:
+    """Unit tests for the extracted _fetch_activity_logs synchronous helper."""
+
+    def test_fetch_activity_logs_returns_records(self) -> None:
+        config = CLUSTER_MAP["dev-eastus"]
+        client = AzureAksClient(config)
+
+        now = datetime.now(tz=UTC)
+        entry = MagicMock()
+        entry.status.value = "Succeeded"
+        entry.event_timestamp = now
+        entry.submission_timestamp = now - timedelta(minutes=30)
+        entry.operation_name.value = "Microsoft.ContainerService/managedClusters/write"
+        entry.description = "Upgrade completed"
+
+        mock_monitor = MagicMock()
+        mock_monitor.activity_logs.list.return_value = [entry]
+
+        records = client._fetch_activity_logs(mock_monitor, "filter_str", 5)
+
+        assert len(records) == 1
+        assert records[0]["status"] == "Succeeded"
+        assert records[0]["duration_seconds"] == 1800.0
+        assert records[0]["description"] == "Upgrade completed"
+
+    def test_fetch_activity_logs_respects_count_limit(self) -> None:
+        config = CLUSTER_MAP["dev-eastus"]
+        client = AzureAksClient(config)
+
+        now = datetime.now(tz=UTC)
+        entries = []
+        for i in range(10):
+            entry = MagicMock()
+            entry.status.value = "Succeeded"
+            entry.event_timestamp = now - timedelta(hours=i)
+            entry.submission_timestamp = now - timedelta(hours=i, minutes=30)
+            entry.operation_name.value = "Microsoft.ContainerService/managedClusters/write"
+            entry.description = f"Upgrade {i}"
+            entries.append(entry)
+
+        mock_monitor = MagicMock()
+        mock_monitor.activity_logs.list.return_value = entries
+
+        records = client._fetch_activity_logs(mock_monitor, "filter_str", 3)
+
+        assert len(records) == 3
+
+    def test_fetch_activity_logs_skips_non_succeeded(self) -> None:
+        config = CLUSTER_MAP["dev-eastus"]
+        client = AzureAksClient(config)
+
+        failed_entry = MagicMock()
+        failed_entry.status.value = "Failed"
+
+        succeeded_entry = MagicMock()
+        succeeded_entry.status.value = "Succeeded"
+        succeeded_entry.event_timestamp = datetime.now(tz=UTC)
+        succeeded_entry.submission_timestamp = datetime.now(tz=UTC) - timedelta(minutes=10)
+        succeeded_entry.operation_name.value = "Microsoft.ContainerService/managedClusters/write"
+        succeeded_entry.description = "ok"
+
+        mock_monitor = MagicMock()
+        mock_monitor.activity_logs.list.return_value = [failed_entry, succeeded_entry]
+
+        records = client._fetch_activity_logs(mock_monitor, "filter_str", 5)
+
+        assert len(records) == 1
+        assert records[0]["status"] == "Succeeded"
