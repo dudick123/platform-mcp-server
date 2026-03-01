@@ -131,7 +131,7 @@ All fixes verified with:
 
 | Check | Result |
 |-------|--------|
-| `uv run pytest --tb=short -q` | 282 passed |
+| `uv run pytest --tb=short -q` | 287 passed |
 | `uv run ruff check .` | All checks passed |
 | `uv run mypy src/` | No issues found (20 source files) |
-| `uv run pytest --cov --cov-report=term` | 99.04% coverage (≥ 90% required) |
+| `uv run pytest --cov --cov-report=term` | 99.12% coverage (≥ 90% required) |

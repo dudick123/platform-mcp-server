@@ -262,6 +262,7 @@ src/platform_mcp_server/
 ├── config.py              # Cluster mappings and thresholds
 ├── models.py              # Pydantic v2 I/O schemas
 ├── validation.py          # Input validation (namespace, node pool, mode)
+├── utils.py               # Shared utilities (timestamp parsing)
 ├── tools/
 │   ├── node_pools.py      # check_node_pool_pressure
 │   ├── pod_health.py      # get_pod_health
@@ -293,8 +294,16 @@ uv run pre-commit install
 uv run ruff check .                         # Lint
 uv run ruff format --check .                # Format check
 uv run mypy src/                            # Type check (strict mode)
+uv run bandit -c pyproject.toml -r src/     # Security scan
 uv run pytest --cov --cov-report=term       # Tests with coverage (90% minimum)
 ```
+
+### CI pipeline
+
+A GitHub Actions workflow (`.github/workflows/ci.yml`) runs on every push to `main` and on pull requests. It runs two parallel jobs:
+
+- **Lint** — ruff check, ruff format, mypy strict, bandit security scan
+- **Test** — pytest with coverage enforcement (≥ 90%)
 
 ### Dev container
 

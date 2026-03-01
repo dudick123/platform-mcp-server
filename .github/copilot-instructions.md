@@ -42,13 +42,15 @@ src/platform_mcp_server/
 ├── config.py               # ClusterConfig frozen dataclasses, ThresholdConfig, CLUSTER_MAP
 ├── models.py               # All Pydantic v2 models for tool I/O
 ├── validation.py           # Input validation helpers
+├── utils.py                # Shared utilities (timestamp parsing)
 ├── tools/
 │   ├── node_pools.py       # check_node_pool_pressure
 │   ├── pod_health.py       # get_pod_health
 │   ├── k8s_upgrades.py     # get_kubernetes_upgrade_status
 │   ├── upgrade_progress.py # get_upgrade_progress
 │   ├── upgrade_metrics.py  # get_upgrade_duration_metrics
-│   └── pdb_check.py        # check_pdb_upgrade_risk
+│   ├── pdb_check.py        # check_pdb_upgrade_risk
+│   └── pod_classification.py  # Shared failure categorization
 └── clients/
     ├── k8s_core.py         # Kubernetes Core API (nodes, pods, namespaces)
     ├── k8s_metrics.py      # Kubernetes Metrics API (CPU/memory usage)
@@ -78,7 +80,9 @@ tests/
 | Logging | `structlog` (JSON to stderr) |
 | Linting & Formatting | Ruff (`line-length = 120`) |
 | Type Checking | mypy strict mode |
+| Security Scanning | Bandit |
 | Testing | pytest + pytest-asyncio + pytest-cov (≥90% coverage enforced) |
+| CI | GitHub Actions (lint + test on push/PR to main) |
 
 ---
 
@@ -114,8 +118,10 @@ async def tool_name(cluster: str) -> str:
 ```
 
 ### Client Pattern
-Clients are thin async wrappers around official SDK calls. They:
+Clients are async wrappers around official SDK calls. They:
 - Accept a `ClusterConfig` (not a raw cluster ID string).
+- Use `asyncio.to_thread()` to offload synchronous SDK calls to the thread pool, keeping the event loop non-blocking.
+- Use thread-safe lazy initialization (`threading.RLock` for Azure, `threading.Lock` for K8s) to guard `_get_api` / `_get_*_client` methods.
 - Raise typed exceptions on failure.
 - Never return raw SDK objects — convert to plain Python types or Pydantic models first.
 
