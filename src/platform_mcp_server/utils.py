@@ -15,5 +15,5 @@ def parse_iso_timestamp(ts_str: str | None) -> datetime | None:
         return None
     try:
         return datetime.fromisoformat(ts_str)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         return None

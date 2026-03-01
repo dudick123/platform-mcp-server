@@ -51,16 +51,12 @@ class K8sPolicyClient:
                 # Note 8: `list_namespaced_pod_disruption_budget` scopes the request to a
                 # Note 9: single namespace when the caller already knows the target namespace,
                 # Note 10: reducing the response payload and API server load.
-                pdb_list = await asyncio.to_thread(
-                    api.list_namespaced_pod_disruption_budget, namespace
-                )
+                pdb_list = await asyncio.to_thread(api.list_namespaced_pod_disruption_budget, namespace)
             else:
                 # Note 11: `list_pod_disruption_budget_for_all_namespaces` is the cluster-wide
                 # Note 12: variant. It is equivalent to `kubectl get pdb -A` and is preferred
                 # Note 13: when building an upgrade safety check that must inspect every PDB.
-                pdb_list = await asyncio.to_thread(
-                    api.list_pod_disruption_budget_for_all_namespaces
-                )
+                pdb_list = await asyncio.to_thread(api.list_pod_disruption_budget_for_all_namespaces)
         except Exception:
             log.error("failed_to_list_pdbs", cluster=self._cluster_config.cluster_id)
             raise

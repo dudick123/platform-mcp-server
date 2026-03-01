@@ -1557,9 +1557,7 @@ class TestThreadSafeLazyInit:
 
         with patch.object(client, "_get_api", side_effect=counting_get_api):
             # Fire multiple concurrent get_nodes calls
-            results = await asyncio.gather(
-                *[asyncio.to_thread(client._get_api) for _ in range(5)]
-            )
+            results = await asyncio.gather(*[asyncio.to_thread(client._get_api) for _ in range(5)])
 
         # Lock ensures _get_api body executes serially; all 5 calls complete
         assert len(results) == 5

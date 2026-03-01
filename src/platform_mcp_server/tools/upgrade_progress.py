@@ -284,9 +284,7 @@ async def get_upgrade_progress_handler(
         if state == "pdb_blocked" and blocker_list:
             # Try to find a blocker that affects pods on this specific node
             node_name = node["name"]
-            node_specific = [
-                b for b in blocker_list if node_name in (b.get("affected_nodes") or [])
-            ]
+            node_specific = [b for b in blocker_list if node_name in (b.get("affected_nodes") or [])]
             chosen = node_specific[0] if node_specific else blocker_list[0]
             blocking_pdb = chosen["name"]
             blocking_pdb_ns = chosen.get("namespace")

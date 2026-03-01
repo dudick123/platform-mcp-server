@@ -30,7 +30,7 @@ def _parse_cpu_millicores(value: str) -> float:
         # Note 6: A bare numeric string like "4" represents whole cores;
         # Note 7: multiply by 1000 to normalize to millicores for uniform arithmetic.
         return float(value) * 1000
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         log.warning("cpu_parse_failed", value=value)
         return 0.0
 
@@ -59,7 +59,7 @@ def _parse_memory_bytes(value: str) -> float:
             return float(value[:-1]) * 1_000_000_000
         # Note 17: A bare number with no suffix is interpreted as raw bytes.
         return float(value)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         log.warning("memory_parse_failed", value=value)
         return 0.0
 

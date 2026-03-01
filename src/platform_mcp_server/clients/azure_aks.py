@@ -252,9 +252,7 @@ class AzureAksClient:
         )
 
         try:
-            records = await asyncio.to_thread(
-                self._fetch_activity_logs, client, filter_str, count
-            )
+            records = await asyncio.to_thread(self._fetch_activity_logs, client, filter_str, count)
         except Exception:
             log.error(
                 "failed_to_get_activity_log",
