@@ -184,12 +184,18 @@ def main() -> int:
 
     token = os.getenv("SYSTEM_ACCESSTOKEN", "")
     if not token:
-        print("SYSTEM_ACCESSTOKEN is required", file=sys.stderr)
+        print(
+            "Error: SYSTEM_ACCESSTOKEN environment variable is required for Azure DevOps authentication",
+            file=sys.stderr,
+        )
         return 2
 
     model_api_key = os.getenv(args.model_key_env, "")
     if not model_api_key:
-        print(f"{args.model_key_env} is required", file=sys.stderr)
+        print(
+            f"Error: {args.model_key_env} environment variable is required for model API authentication",
+            file=sys.stderr,
+        )
         return 2
 
     pr_id = args.pr_id or int(os.getenv("SYSTEM_PULLREQUEST_PULLREQUESTID", "0"))
