@@ -1,0 +1,43 @@
+parameters:
+  - name: org
+    type: string
+  - name: project
+    type: string
+  - name: repo
+    type: string
+  - name: modelEndpoint
+    type: string
+  - name: modelKeySecretName
+    type: string
+  - name: pythonVersion
+    type: string
+    default: "3.14"
+  - name: maxDiffChars
+    type: number
+    default: 120000
+
+steps:
+  - checkout: self
+    persistCredentials: true
+    fetchDepth: 0
+
+  - task: UsePythonVersion@0
+    displayName: "Use Python ${{ parameters.pythonVersion }}"
+    inputs:
+      versionSpec: ${{ parameters.pythonVersion }}
+
+  - script: |
+      python scripts/pr_ai_review.py \
+        --org "${{ parameters.org }}" \
+        --project "${{ parameters.project }}" \
+        --repo "${{ parameters.repo }}" \
+        --model-endpoint "${{ parameters.modelEndpoint }}" \
+        --max-diff-chars "${{ parameters.maxDiffChars }}"
+    displayName: "AI PR review"
+    env:
+      SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+      MODEL_API_KEY: ${{ format('$({0})', parameters.modelKeySecretName) }}
+      SYSTEM_PULLREQUEST_PULLREQUESTID: $(System.PullRequest.PullRequestId)
+      SYSTEM_PULLREQUEST_SOURCEBRANCH: $(System.PullRequest.SourceBranch)
+      SYSTEM_PULLREQUEST_TARGETBRANCH: $(System.PullRequest.TargetBranch)
+    condition: and(succeeded(), eq(variables['Build.Reason'], 'PullRequest'))
