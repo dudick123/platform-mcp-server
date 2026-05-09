@@ -256,6 +256,7 @@ def main() -> int:
         print(f"HTTP error: {exc.code} {details}", file=sys.stderr)
         return 1
     except error.URLError as exc:
+        # Catches non-HTTP network failures (e.g., DNS resolution, connection timeout).
         print(f"Network error while contacting Azure DevOps or model endpoint: {exc.reason}", file=sys.stderr)
         return 1
     except Exception as exc:
