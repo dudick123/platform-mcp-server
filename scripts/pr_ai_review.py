@@ -166,7 +166,9 @@ def _build_prompt(pr_title: str, pr_description: str, files: list[str], diff: st
 def _parse_line_number(line_raw: Any) -> int:
     try:
         line = int(line_raw)
-    except TypeError, ValueError:
+    except TypeError:
+        return 1
+    except ValueError:
         return 1
     return line if line > 0 else 1
 
@@ -252,6 +254,9 @@ def main() -> int:
     except error.HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")
         print(f"HTTP error: {exc.code} {details}", file=sys.stderr)
+        return 1
+    except error.URLError as exc:
+        print(f"Network error while contacting Azure DevOps or model endpoint: {exc.reason}", file=sys.stderr)
         return 1
     except Exception as exc:
         print(f"AI review failed: {exc}", file=sys.stderr)
