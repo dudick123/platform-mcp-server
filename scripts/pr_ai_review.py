@@ -163,6 +163,14 @@ def _build_prompt(pr_title: str, pr_description: str, files: list[str], diff: st
     )
 
 
+def _parse_line_number(line_raw: Any) -> int:
+    try:
+        line = int(line_raw)
+    except TypeError, ValueError:
+        return 1
+    return line if line > 0 else 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI review for Azure DevOps pull requests")
     parser.add_argument("--org", required=True)
@@ -224,8 +232,7 @@ def main() -> int:
             title = str(finding.get("title", "Review finding")).strip() or "Review finding"
             severity = str(finding.get("severity", "medium")).strip().lower()
             path = str(finding.get("path", "")).strip()
-            line_raw = finding.get("line", 1)
-            line = int(line_raw) if isinstance(line_raw, int | float | str) and str(line_raw).isdigit() else 1
+            line = _parse_line_number(finding.get("line", 1))
             comment = str(finding.get("comment", "")).strip() or "No detail provided."
 
             body = f"**[{severity}] {title}**\n\n{comment}"
